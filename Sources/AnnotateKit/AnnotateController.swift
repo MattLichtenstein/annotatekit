@@ -1,4 +1,6 @@
 // Annotate-mode state machine, observed by the overlay views.
+// Draw/Scroll switches drags between annotation and live app scrolling; taps still select pins.
+// Live selection takes a new immutable capture before a note opens, then resumes scrolling on save.
 // Start → freeze-frame: the app is captured (pixels + visible-text outline) and the overlay shows
 // that still image, so what you annotate is exactly what gets sent and coordinates can't drift.
 // Every touch is classified by `PointerIntent`:
@@ -55,6 +57,7 @@ import UIKit
 
 @MainActor
 @Observable
+/// Coordinates annotation captures, note editing, and live scrolling without reassigning saved evidence.
 final class AnnotateController {
     struct Draft: Equatable {
         /// `index` is 0 until a new draft is saved.
@@ -150,17 +153,74 @@ final class AnnotateController {
 
     @ObservationIgnored private(set) var options = AnnotateOptions()
     @ObservationIgnored private var callerFile = ""
-    @ObservationIgnored weak var window: OverlayWindow?
+    @ObservationIgnored weak var window: OverlayWindow? {
+        didSet { updateInteractionRouting() }
+    }
     @ObservationIgnored private var cachedProjectRoot: URL??
 
     // MARK: Layout (pushed by the hosting controller)
 
     private(set) var bounds: CGRect = .zero
     private(set) var safeInsets: UIEdgeInsets = .zero
+    /// Key-window changes while switching gestures must not move the review controls.
+    private var reviewBottomInset: CGFloat?
 
     // MARK: State
 
-    private(set) var isActive = false
+    private(set) var isActive = false {
+        didSet { updateInteractionRouting() }
+    }
+    private(set) var dragMode: OverlayDragMode = .draw {
+        didSet { updateInteractionRouting() }
+    }
+    private(set) var isPreparingLiveSelection = false {
+        didSet { updateInteractionRouting() }
+    }
+    /// The actual bar bounds, excluding its full-screen placement container and noninteractive hint.
+    private(set) var reviewBarFrame: CGRect = .zero
+
+    private(set) var showsThreadPicker = false {
+        didSet { updateInteractionRouting() }
+    }
+    private(set) var threadCatalog: T3ThreadCatalog?
+    private(set) var hasReadThreadCatalog = false
+    private(set) var selectedT3Route: T3Route?
+    private(set) var selectedThreadTitle: String?
+    /// Transient delivery feedback; durable receipts independently authorize content cleanup.
+    private(set) var t3DeliveryText: String?
+    @ObservationIgnored private var acknowledgedT3SessionID: String?
+    @ObservationIgnored private var t3ConfirmationHold: Task<Void, Never>?
+    private var sentT3Route: T3Route?
+
+    func openThreadPicker() {
+        guard options.t3ProjectID != nil, chrome.canSend else { return }
+        if isBrowsing { freezeLiveScreen() }
+        showsThreadPicker = true
+    }
+
+    func closeThreadPicker() { showsThreadPicker = false }
+
+    func sendToThread(_ thread: T3Thread?) {
+        guard let projectID = options.t3ProjectID else { return }
+        selectedT3Route = makeT3Route(projectID: projectID, threadID: thread?.id)
+        selectedThreadTitle = thread?.title
+        showsThreadPicker = false
+        send(keepAnnotating: true)
+    }
+
+    private func makeT3Route(projectID: String, threadID: String? = nil) -> T3Route {
+        T3Route(projectID: projectID, threadID: threadID,
+                delivery: options.clearsT3DeliveredFeedback ? "t3-owned-bundle-v1" : nil)
+    }
+
+    var isBrowsing: Bool {
+        dragMode.allowsAppScrolling(
+            isActive: isActive,
+            hasOpenCard: draft != nil || replyDraft != nil || showsThreadPicker,
+            showsNotes: isShowingNotes,
+            isPreparingSelection: isPreparingLiveSelection
+        )
+    }
     private(set) var annotations: [Annotation] = [] {
         didSet { refreshChrome() }
     }
@@ -183,7 +243,9 @@ final class AnnotateController {
     /// What the overlay shows: the reply card while answering a question, the comment card while a
     /// pin is open, the review bar otherwise. Stored and reassigned only when it changes, so the views
     /// that switch on it aren't invalidated by each keystroke of a comment or reply.
-    private(set) var chrome: OverlayChrome = .review(count: 0)
+    private(set) var chrome: OverlayChrome = .review(count: 0) {
+        didSet { updateInteractionRouting() }
+    }
     /// The stroke under the finger, in screen points; joins a pin when the finger lifts.
     private(set) var liveStroke: Stroke?
     private(set) var toast: Toast?
@@ -231,7 +293,9 @@ final class AnnotateController {
     /// screen with their progress (Figma 9276:28552); closing annotate mode drops them.
     private(set) var showsSentPins = false
     /// The notes sheet is up (the review bar's count opens it).
-    private(set) var isShowingNotes = false
+    private(set) var isShowingNotes = false {
+        didSet { updateInteractionRouting() }
+    }
     /// Earlier Sends of the last 48 hours, newest first (`refreshHistory`); `lastSend` isn't among them.
     private(set) var history: [PastSend] = []
     /// How many of `lastSend`'s notes are written into its bundle so far ("Sending notes · 1/4").
@@ -286,6 +350,7 @@ final class AnnotateController {
     @ObservationIgnored private var keyboardObservers: [NSObjectProtocol] = []
     /// A tap waiting for scans to match the frozen image; a newer interaction replaces it.
     @ObservationIgnored private var pendingTap: Task<Void, Never>?
+    @ObservationIgnored private var liveSelection: Task<Void, Never>?
     @ObservationIgnored private var pendingAttributions: [Task<Void, Never>] = []
     /// Replies sent from this device, by pin. status.json keeps the pin as `.question` until the Mac
     /// delivers the reply, so these keep it answered locally instead of flipping back each poll.
@@ -319,6 +384,9 @@ final class AnnotateController {
 
     func updateLayout(bounds: CGRect, safeInsets: UIEdgeInsets) {
         guard self.bounds != bounds || self.safeInsets != safeInsets else { return }
+        if isActive, self.bounds != bounds {
+            reviewBottomInset = reviewDockInset(in: bounds, safeInsets: safeInsets)
+        }
         if self.bounds != bounds { self.bounds = bounds }
         if self.safeInsets != safeInsets { self.safeInsets = safeInsets }
         // A rotation or a new safe area moves the dock, so check the chrome around the new one
@@ -330,6 +398,7 @@ final class AnnotateController {
 
     func start() {
         guard !isActive else { return }
+        dismissT3Confirmation()
         launchStart?.cancel()
         launchStart = nil
         // Nothing moves the pill while annotating, so the chrome walk rests until `stop`
@@ -339,11 +408,13 @@ final class AnnotateController {
             AccessibilityBootstrap.enable()
         }
         AnnotatableRegistry.shared.setCollecting(true)
-        freezeScreen()
+        if dragMode == .scroll { freezeLiveScreen() }
+        else { freezeScreen() }
+        reviewBottomInset = reviewDockInset(in: bounds, safeInsets: safeInsets)
         isActive = true
         startIntro()
         observeKeyboard()
-        window?.activate()
+        if !isBrowsing { window?.activate() }
         warmUpAccessibility()
         // An agent waiting on an answer: open the notes sheet, where the question has its Reply
         if pinResults.contains(where: { $0.outcome.isQuestion }) {
@@ -353,6 +424,8 @@ final class AnnotateController {
 
     func stop() {
         guard isActive else { return }
+        dismissT3Confirmation()
+        showsThreadPicker = false
         finishDraft()
         cancelReply()
         closeNotes()
@@ -363,6 +436,10 @@ final class AnnotateController {
         touch = nil
         liveStroke = nil
         isActive = false
+        reviewBottomInset = nil
+        liveSelection?.cancel()
+        liveSelection = nil
+        isPreparingLiveSelection = false
         introTask?.cancel()
         introTask = nil
         isIntro = false
@@ -378,8 +455,70 @@ final class AnnotateController {
         stopObservingKeyboard()
         AnnotatableRegistry.shared.setCollecting(false)
         window?.deactivate()
+        // Notify only after returning window ownership, so host shake responders can rearm safely.
+        options.onDismiss?()
         // The app may have changed under the frozen screen; place the returning pill against it
         resumePlacementChecks()
+    }
+
+    /// Saved pins stay attached to their original pixels while the live app moves underneath.
+    func toggleDragMode() {
+        guard isActive, case .review = chrome, !isShowingNotes, !isPreparingLiveSelection else { return }
+        if dragMode == .scroll {
+            guard freezeLiveScreen() else {
+                showToast("This screen could not be captured")
+                return
+            }
+            warmUpAccessibility()
+        }
+        dragMode = dragMode.toggled
+    }
+
+    func updateReviewBarFrame(_ frame: CGRect) {
+        if reviewBarFrame != frame { reviewBarFrame = frame }
+    }
+
+    private func updateInteractionRouting() {
+        // Geometry registration is unnecessary while native scrolling is live. Re-enable it before
+        // capture warm-up, rather than invalidating the SwiftUI row backgrounds on every scroll tick.
+        AnnotatableRegistry.shared.setCollecting(isActive && !isBrowsing)
+        window?.setAppScrollingEnabled(isBrowsing)
+    }
+
+    /// The host-window recognizer consumes taps, but a pan stays entirely in the native app.
+    func selectWhileBrowsing(at point: CGPoint, intent: PointerIntent) {
+        guard isBrowsing, intent != .draw else { return }
+        isPreparingLiveSelection = true
+        cancelPendingTap()
+        guard freezeLiveScreen() else {
+            isPreparingLiveSelection = false
+            showToast("This screen could not be captured")
+            return
+        }
+        warmUpAccessibility()
+        let screen = currentScreen
+        liveSelection?.cancel()
+        liveSelection = Task { [weak self] in
+            await self?.untilScannable(dismissingKeyboard: true)
+            guard let self, !Task.isCancelled, self.isActive, self.currentScreen == screen else { return }
+            if !self.isShowingNotes, self.replyDraft == nil, self.draft == nil, self.frozenImage != nil {
+                if intent == .hold { self.hold(at: point) }
+                else { self.select(at: point) }
+            }
+            self.isPreparingLiveSelection = false
+            self.liveSelection = nil
+        }
+    }
+
+    @discardableResult
+    private func freezeLiveScreen() -> Bool {
+        // A toolbar tap does not stop a list's momentum because it lands in the overlay window.
+        if let scroll = ScrollProbe.mainScrollView(excluding: window) {
+            scroll.setContentOffset(scroll.contentOffset, animated: false)
+            scroll.layoutIfNeeded()
+        }
+        freezeScreen(reusingScreens: false)
+        return frozenImage != nil
     }
 
     /// Launch-time start (`ANNOTATE=1`): freezes the first screen the app settles on instead of
@@ -766,6 +905,7 @@ final class AnnotateController {
 
     /// Opens the notes sheet, empty or not: with nothing to list it says how to add a note.
     func openNotes() {
+        if isBrowsing { freezeLiveScreen() }
         finishDraft()
         refreshHistory()
         isShowingNotes = true
@@ -913,6 +1053,12 @@ final class AnnotateController {
             return
         }
 
+        if let projectID = options.t3ProjectID, selectedT3Route == nil {
+            selectedT3Route = makeT3Route(projectID: projectID)
+        }
+        let route = selectedT3Route
+        let savedScreens = screens
+        let savedAttachments = attachmentImages
         var outgoing = annotations
         if let root = projectRoot {
             for position in outgoing.indices {
@@ -940,8 +1086,14 @@ final class AnnotateController {
             includesHiRes: options.includesHiResScreens,
             keepSessions: options.keepsSessions,
             cropPadding: Self.cropPadding,
-            attachments: attachmentImages.filter { outgoingIDs.contains($0.key) }.mapValues { $0.map(\.image) }
+            attachments: attachmentImages.filter { outgoingIDs.contains($0.key) }.mapValues { $0.map(\.image) },
+            t3Route: route
         )
+        sentT3Route = route
+        t3ConfirmationHold?.cancel()
+        t3ConfirmationHold = nil
+        acknowledgedT3SessionID = nil
+        t3DeliveryText = nil
 
         // These pins are the ones the agent will report on; the previous Send's results are gone
         lastSend = SentBatch(sessionID: job.sessionID, output: job.outputDirectory, pins: outgoing, sentAt: Date())
@@ -993,8 +1145,17 @@ final class AnnotateController {
             // A failed write's prompt is the user's only copy of it, so it's copied even when a newer
             // Send superseded this one. The opt-in copy of a successful write is skipped once
             // superseded, so it can't clobber the newer Send's prompt.
-            if outcome.error != nil || (self.options.copiesPromptToClipboard && !Task.isCancelled) {
+            if (outcome.error != nil && route == nil) || (self.options.copiesPromptToClipboard && !Task.isCancelled) {
                 UIPasteboard.general.string = outcome.prompt
+            }
+            if outcome.error != nil, route != nil {
+                // Routed feedback has a durable retry workflow; keep the actual notes and captures.
+                self.annotations.insert(contentsOf: outgoing, at: 0)
+                for index in self.annotations.indices { self.annotations[index].index = index + 1 }
+                self.screens.merge(savedScreens) { current, _ in current }
+                self.attachmentImages.merge(savedAttachments) { current, _ in current }
+                self.showsSentPins = false
+                self.showToast("Notes could not be saved. Try Send again.")
             }
             guard !Task.isCancelled else { return }
             self.deliveryWrite = nil
@@ -1005,7 +1166,9 @@ final class AnnotateController {
                 self.clearDelivery(ifStill: .notSaved, after: LauncherStatus.finalHold)
                 return
             }
-            if self.agent == nil {
+            if route != nil {
+                self.t3DeliveryText = "Waiting for Mac"
+            } else if self.agent == nil {
                 // Nothing is listening: say so now rather than after `unclaimedAfter`. Tracking still
                 // runs, so an agent that connects in time picks it up and narrates over this.
                 self.delivery = .noAgent
@@ -1042,6 +1205,8 @@ final class AnnotateController {
 
     /// Review bar height: its 52pt buttons, Figma 9276:27551 / 9276:27556 / 9276:27561.
     static let barHeight: CGFloat = 52
+    private static let minimumChromeBottomInset: CGFloat = 12
+    private static let reviewTabBarGap: CGFloat = 8
     /// Launcher pill height, Figma 9265:14504 (`h-[44px]`; it wins over py-8 + the 22pt line).
     static let launcherHeight: CGFloat = 44
     /// Gap between the pill and the keyboard while one is up. No Figma frame: the 8pt the comment
@@ -1101,15 +1266,17 @@ final class AnnotateController {
     /// The review bar's bottom: above the home indicator whether or not a keyboard is up, so the bar
     /// never rides a keyboard that's leaving with the card.
     var screenChromeBottom: CGFloat {
-        bounds.maxY - max(safeInsets.bottom, 12)
+        bounds.maxY - (reviewBottomInset ?? max(safeInsets.bottom, Self.minimumChromeBottomInset))
     }
 
-    /// Claude is reading or working on the last Send: the edge glow and frost turn green meanwhile.
-    var isAgentWorking: Bool {
-        switch delivery {
-        case .received, .working: true
-        default: false
-        }
+    /// Fix one review baseline above the native tabs for the whole active session. Switching
+    /// key windows or gesture mode must not resample chrome and move the button under a finger.
+    private func reviewDockInset(in bounds: CGRect, safeInsets: UIEdgeInsets) -> CGFloat {
+        let hostInset = ElementScanner.appWindows(excluding: window)
+            .first(where: { $0.windowLevel == .normal })?.safeAreaInsets.bottom ?? safeInsets.bottom
+        let fallback = max(hostInset, Self.minimumChromeBottomInset)
+        guard let window, let tabTop = LauncherObstacles.tabBarTop(overlay: window) else { return fallback }
+        return max(fallback, bounds.maxY - tabTop + Self.reviewTabBarGap)
     }
 
     /// What the launcher pill says: the delivery stage while one is showing, otherwise idle with
@@ -1253,7 +1420,7 @@ final class AnnotateController {
     /// freeze-frame comes back instead, so its pins show again exactly where they were drawn.
     /// Otherwise it's a new screen; screens with no pins are dropped, so opening and closing
     /// annotate mode doesn't pile up empty ones.
-    private func freezeScreen() {
+    private func freezeScreen(reusingScreens: Bool = true) {
         guard let image = Snapshotter.captureApp(excluding: window) else {
             frozenImage = nil
             return
@@ -1266,7 +1433,7 @@ final class AnnotateController {
         if showsSentPins, let lastSend { pinned.formUnion(lastSend.pins.map(\.screen)) }
         screens = screens.filter { pinned.contains($0.key) }
         let candidates = screens.values.compactMap { screen in screen.thumbnail.map { (index: screen.index, pixels: $0) } }
-        if let thumbnail, let index = ScreenMatch.match(thumbnail, among: candidates), let revisited = screens[index] {
+        if reusingScreens, let thumbnail, let index = ScreenMatch.match(thumbnail, among: candidates), let revisited = screens[index] {
             currentScreen = index
             frozenImage = revisited.image
         } else {
@@ -1275,7 +1442,9 @@ final class AnnotateController {
             currentScreen = index
             frozenImage = image
         }
-        followScroll(into: currentScreen, bounds: CGRect(origin: .zero, size: image.size))
+        // Live captures never translate an existing pin onto a different screenshot. Its coordinates,
+        // source reference and original screen remain one immutable piece of feedback evidence.
+        if reusingScreens { followScroll(into: currentScreen, bounds: CGRect(origin: .zero, size: image.size)) }
     }
 
     /// Back on a scroll view that has pins from earlier captures, those pins move by how far its
@@ -1401,6 +1570,8 @@ final class AnnotateController {
     private func applySketchAttribution(_ id: UUID, drawn: CGRect) {
         guard let position = annotations.firstIndex(where: { $0.id == id }) else { return }
         var pin = annotations[position]
+        // A deferred scan must not attach the identity of a newly scrolled row to an older sketch.
+        guard !isBrowsing, pin.screen == currentScreen else { return }
         let center = CGPoint(x: drawn.midX, y: drawn.midY)
         let registered = AnnotatableRegistry.shared.visible(in: bounds)
         let candidates = ElementScanner.candidates(at: center, excluding: window) + registered.map(\.candidate)
@@ -1615,7 +1786,7 @@ final class AnnotateController {
                 guard let self, !Task.isCancelled else { return }
                 let elapsed = Date().timeIntervalSince(started)
                 // Checked for every status, so an agent that died mid-work doesn't pin the pill forever
-                if elapsed > Self.deliveryTrackingLimit {
+                if elapsed > Self.deliveryTrackingLimit && self.sentT3Route == nil {
                     if self.delivery?.isFinal == false { self.delivery = nil }
                     return
                 }
@@ -1625,10 +1796,39 @@ final class AnnotateController {
                 }.value
                 // A newer Send cancels this loop; a status read for the old one mustn't narrate over it
                 guard !Task.isCancelled else { return }
+                if let route = self.sentT3Route {
+                    let receipt = await Task.detached(priority: .utility) {
+                        T3DeliveryFiles.read(id: id, in: output)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    if let receipt, receipt.version == 1, receipt.sessionID == id {
+                        self.showT3Confirmation(id: id)
+                        if self.selectedT3Route?.conversationID == route.conversationID {
+                            self.selectedT3Route?.threadID = receipt.threadID
+                            self.selectedThreadTitle = receipt.title
+                        }
+                        if receipt.contentStoredInT3 == true, route.delivery == T3DeliveryFiles.ownedDelivery {
+                            await Task.detached(priority: .utility) {
+                                T3DeliveryFiles.clearAcknowledgedContent(in: output)
+                            }.value
+                            guard !Task.isCancelled else { return }
+                            self.lastSend = nil
+                            self.showsSentPins = false
+                            self.updateReportedStatuses([], acknowledged: [])
+                            let unsentScreens = Set(self.annotations.map(\.screen))
+                            self.screens = self.screens.filter { $0.key == self.currentScreen || unsentScreens.contains($0.key) }
+                            self.refreshHistory()
+                            self.delivery = nil
+                            self.deliveryStartedAt = nil
+                            return
+                        }
+                    }
+                    if read != nil { self.t3DeliveryText = nil }
+                }
                 guard let status = read else {
                     // Nobody picked it up: say so briefly, then go back to idle. Polling goes on,
                     // because a watcher started late still claims the bundle.
-                    if elapsed > self.options.unclaimedAfter, case .sent = self.delivery {
+                    if self.sentT3Route == nil, elapsed > self.options.unclaimedAfter, case .sent = self.delivery {
                         self.delivery = .unclaimed
                         self.clearDelivery(ifStill: .unclaimed, after: LauncherStatus.unclaimedHold)
                     }
@@ -1674,6 +1874,8 @@ final class AnnotateController {
                 guard let id = SessionInbox.sessionIDs(in: output).last,
                       let session = try? SessionInbox.loadSession(id: id, in: output),
                       Date().timeIntervalSince(session.createdAt) < Self.deliveryTrackingLimit else { return nil }
+                // Receipts are durable history, not a fresh Send confirmation on every launch.
+                if session.t3Route != nil, T3DeliveryFiles.read(id: id, in: output) != nil { return nil }
                 let status = SessionInbox.readStatus(id: id, in: output)
                 let resumed = (session: session, pins: status?.pins ?? [], acknowledged: status?.acknowledged ?? [])
                 guard let status, status.isFinal else { return resumed }
@@ -1687,10 +1889,38 @@ final class AnnotateController {
             self.localReplies.removeAll()
             self.updateReportedStatuses(resumable.pins, acknowledged: resumable.acknowledged)
             self.deliveryStartedAt = session.createdAt
+            self.sentT3Route = session.t3Route
+            if session.t3Route != nil { self.t3DeliveryText = "Waiting for Mac" }
             // A resumed Send was written before the relaunch
             self.notesWritten = session.annotations.count
             self.trackDelivery(id: session.id, in: output)
         }
+    }
+
+    /// Confirm each batch once, briefly, without changing its durable delivery/cleanup receipt.
+    private func showT3Confirmation(id: String) {
+        guard acknowledgedT3SessionID != id else { return }
+        acknowledgedT3SessionID = id
+        t3ConfirmationHold?.cancel()
+        if case .sent = delivery {
+            delivery = nil
+            deliveryStartedAt = nil
+        }
+        guard isActive else { t3DeliveryText = nil; return }
+        t3DeliveryText = "Queued in thread"
+        t3ConfirmationHold = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(LauncherStatus.finalHold))
+            guard let self, !Task.isCancelled, self.acknowledgedT3SessionID == id else { return }
+            self.t3DeliveryText = nil
+        }
+    }
+
+    /// Closing/reopening the overlay does not replay an acknowledged batch; pending Sends remain.
+    private func dismissT3Confirmation() {
+        guard acknowledgedT3SessionID != nil else { return }
+        t3ConfirmationHold?.cancel()
+        t3ConfirmationHold = nil
+        t3DeliveryText = nil
     }
 
     /// Returns the launcher to idle after `seconds`, unless the stage changed meanwhile. Runs beside
@@ -1718,6 +1948,7 @@ final class AnnotateController {
         presenceTask = Task { [weak self] in
             while !Task.isCancelled {
                 let (presence, age) = await Task.detached(priority: .utility) { () -> (AgentPresence?, TimeInterval?) in
+                    T3DeliveryFiles.clearAcknowledgedContent(in: output)
                     if let beacon, let data = try? AnnotationSession.encoder.encode(beacon) {
                         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
                         try? data.write(to: output.appendingPathComponent(AgentPresenceFile.appFile), options: .atomic)
@@ -1725,6 +1956,15 @@ final class AnnotateController {
                     return (AgentPresenceFile.read(in: output), AgentPresenceFile.heartbeatAge(in: output))
                 }.value
                 guard let self, !Task.isCancelled else { return }
+                if let projectID = self.options.t3ProjectID {
+                    let catalog = await Task.detached(priority: .utility) {
+                        let url = output.appendingPathComponent(T3ThreadCatalog.fileName)
+                        guard let data = try? Data(contentsOf: url) else { return Optional<T3ThreadCatalog>.none }
+                        return try? AnnotationSession.decoder.decode(T3ThreadCatalog.self, from: data)
+                    }.value
+                    self.threadCatalog = catalog?.projectID == projectID && catalog?.version == 1 ? catalog : nil
+                    self.hasReadThreadCatalog = true
+                }
                 // Not `!=`: `updatedAt` moves with every heartbeat, so that reassigned `agent` every few
                 // seconds and redrew the pill, hint line and sheets while idle
                 if !Self.isSamePresence(self.agent, presence) {

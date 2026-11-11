@@ -42,6 +42,13 @@ public struct AnnotateOptions: Sendable {
     /// How much each Send's prompt carries. `.compact` saves tokens; `.detailed` adds every
     /// screen's visible text.
     public var promptDetail: PromptDetail
+    /// Called after annotation mode closes and releases its keyboard/window ownership.
+    /// Hosts can use this to restore their own invocation responder without observing SDK internals.
+    public var onDismiss: (@MainActor @Sendable () -> Void)?
+    /// Enables the opt-in T3 Send picker. Use a dedicated `.annotate/t3` output directory and receiver.
+    public var t3ProjectID: String?
+    /// Clear sent feedback content only after T3 owns and acknowledges the complete bundle.
+    public var clearsT3DeliveredFeedback: Bool
 
     public init(
         showsLauncher: Bool = true,
@@ -53,7 +60,10 @@ public struct AnnotateOptions: Sendable {
         unclaimedAfter: Double = 10,
         includesHiResScreens: Bool = false,
         keepsSessions: Int = 30,
-        promptDetail: PromptDetail = .standard
+        promptDetail: PromptDetail = .standard,
+        onDismiss: (@MainActor @Sendable () -> Void)? = nil,
+        t3ProjectID: String? = nil,
+        clearsT3DeliveredFeedback: Bool = false
     ) {
         self.showsLauncher = showsLauncher
         self.outputDirectory = outputDirectory
@@ -65,6 +75,9 @@ public struct AnnotateOptions: Sendable {
         self.includesHiResScreens = includesHiResScreens
         self.keepsSessions = keepsSessions
         self.promptDetail = promptDetail
+        self.onDismiss = onDismiss
+        self.t3ProjectID = t3ProjectID
+        self.clearsT3DeliveredFeedback = clearsT3DeliveredFeedback
     }
 }
 
@@ -90,6 +103,15 @@ public enum Annotate {
     public static func stop() {
         #if DEBUG && canImport(UIKit)
         OverlayInstaller.shared.controller.stop()
+        #endif
+    }
+
+    /// Removes only content with a durable T3-owned receipt, without installing the overlay.
+    public static func clearDeliveredFeedback(in output: URL) async {
+        #if DEBUG && canImport(UIKit)
+        _ = await Task.detached(priority: .utility) {
+            T3DeliveryFiles.clearAcknowledgedContent(in: output)
+        }.value
         #endif
     }
 

@@ -38,6 +38,9 @@ public enum SessionWriter {
             .appendingPathComponent(sessionsFolder, isDirectory: true)
             .appendingPathComponent(bundle.session.id, isDirectory: true)
         try fileManager.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        if bundle.session.t3Route?.delivery == T3DeliveryFiles.ownedDelivery {
+            try fileManager.createDirectory(at: outputDirectory.appendingPathComponent(T3DeliveryFiles.folder), withIntermediateDirectories: true)
+        }
 
         let gitignore = outputDirectory.appendingPathComponent(".gitignore")
         if !fileManager.fileExists(atPath: gitignore.path) {
@@ -422,7 +425,14 @@ public enum SessionInbox {
         let sessions = outputDirectory.appendingPathComponent(SessionWriter.sessionsFolder, isDirectory: true)
         let ids = ((try? fileManager.contentsOfDirectory(atPath: sessions.path)) ?? []).filter(isValidSessionID).sorted()
         let cutoff = historyCutoffID(now: now)
-        let doomed = ids.dropLast(keeping).filter { $0 < cutoff }
+        let doomed = ids.dropLast(keeping).filter { id in
+            guard id < cutoff else { return false }
+            // Routed review feedback is retained until the host explicitly finishes its review.
+            if let session = try? loadSession(id: id, in: outputDirectory), session.t3Route != nil {
+                return false
+            }
+            return true
+        }
         for id in doomed {
             try? fileManager.removeItem(at: sessions.appendingPathComponent(id, isDirectory: true))
         }

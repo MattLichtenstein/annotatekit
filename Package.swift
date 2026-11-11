@@ -13,13 +13,15 @@ let package = Package(
     products: [
         .library(name: "AnnotateKit", targets: ["AnnotateKit"]),
         .library(name: "AnnotateCore", targets: ["AnnotateCore"]),
-        .executable(name: "annotate", targets: ["AnnotateCLI"])
+        .executable(name: "annotate", targets: ["AnnotateCLI"]),
+        .executable(name: "annotate-t3", targets: ["AnnotateT3CLI"])
     ],
     targets: [
         .target(name: "AnnotateCore"),
         .target(name: "AnnotateKit", dependencies: ["AnnotateCore"]),
         .target(name: "AnnotateAgent", dependencies: ["AnnotateCore"]),
         .executableTarget(name: "AnnotateCLI", dependencies: ["AnnotateAgent", "AnnotateCore"]),
+        .executableTarget(name: "AnnotateT3CLI", dependencies: ["AnnotateAgent", "AnnotateCore"], resources: [.copy("Resources")]),
         .testTarget(name: "AnnotateCoreTests", dependencies: ["AnnotateCore"]),
         .testTarget(name: "AnnotateAgentTests", dependencies: ["AnnotateAgent", "AnnotateCore"])
     ],

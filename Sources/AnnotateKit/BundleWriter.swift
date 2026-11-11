@@ -34,6 +34,7 @@ struct SendJob: @unchecked Sendable {
     let cropPadding: CGFloat
     /// Reference images per pin id, in the order picked.
     let attachments: [UUID: [UIImage]]
+    var t3Route: T3Route? = nil
 }
 
 struct SendOutcome: Sendable {
@@ -106,7 +107,8 @@ extension BundleRenderer {
             app: job.app,
             device: job.device,
             screens: screens,
-            annotations: annotations
+            annotations: annotations,
+            t3Route: job.t3Route
         )
         let sessionDirectory = SessionInbox.sessionDirectory(session.id, in: job.outputDirectory)
         let prompt = PromptRenderer.render(session, sessionPath: sessionDirectory.path, completion: job.completionNote, detail: job.promptDetail)

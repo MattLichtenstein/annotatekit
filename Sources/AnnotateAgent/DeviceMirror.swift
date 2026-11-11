@@ -100,11 +100,15 @@ public actor DeviceMirror {
     struct Mirrored {
         let target: Target
         let since: Date
+        var isRouted = false
+        var receiptForwarded: Data?
         var forwarded: Data?
         /// Last time the device's `replies.json` was pulled; throttled to `hotInterval`.
         var repliesPulledAt: Date = .distantPast
     }
 
+    let remoteDirectory: String
+    let sharedFiles: [String]
     let outputDirectory: URL
     let projectRoot: URL
     let cutoffID: String
@@ -126,13 +130,18 @@ public actor DeviceMirror {
         cutoffID: String,
         bridge: DeviceBridge,
         projectBundleIDs: [String]? = nil,
+        projectRoot: URL? = nil,
+        remoteDirectory: String = DeviceMirror.remoteRoot,
+        sharedFiles: [String] = [],
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.outputDirectory = outputDirectory
-        self.projectRoot = outputDirectory.deletingLastPathComponent()
+        self.projectRoot = projectRoot ?? outputDirectory.deletingLastPathComponent()
+        self.remoteDirectory = remoteDirectory
+        self.sharedFiles = sharedFiles.filter { !$0.contains("/") && !$0.hasPrefix(".") }
         self.cutoffID = cutoffID
         self.bridge = bridge
-        self.projectBundleIDs = projectBundleIDs ?? BundleIDPattern.scan(projectRoot: outputDirectory.deletingLastPathComponent())
+        self.projectBundleIDs = projectBundleIDs ?? BundleIDPattern.scan(projectRoot: self.projectRoot)
         self.log = log
     }
 
@@ -217,7 +226,7 @@ public actor DeviceMirror {
     private func poll(_ target: Target, now: Date) async {
         targets[target]?.lastPolled = now
         // Fails while the app has never sent (no .annotate folder yet); a cold one backs off
-        guard let files = try? await bridge.files(on: target.device, app: target.app, path: Self.remoteRoot) else {
+        guard let files = try? await bridge.files(on: target.device, app: target.app, path: remoteDirectory) else {
             targets[target]?.misses += 1
             return
         }
@@ -243,7 +252,7 @@ public actor DeviceMirror {
         targets[target]?.beaconCheckedAt = now
         let local = stagingDirectory().appendingPathComponent("\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: local) }
-        guard (try? await bridge.copy(from: "\(Self.remoteRoot)/\(AgentPresenceFile.appFile)", on: target.device, app: target.app, to: local)) != nil,
+        guard (try? await bridge.copy(from: "\(remoteDirectory)/\(AgentPresenceFile.appFile)", on: target.device, app: target.app, to: local)) != nil,
               let data = try? Data(contentsOf: local),
               let beacon = try? AnnotationSession.decoder.decode(AppBeacon.self, from: data) else { return }
         let belongs = Self.belongs(installFile: beacon.installFile, bundleID: beacon.bundleID ?? target.app, to: projectRoot, projectBundleIDs: projectBundleIDs)
@@ -258,10 +267,20 @@ public actor DeviceMirror {
     private func mirror(_ id: String, from target: Target, now: Date) async {
         let fileManager = FileManager.default
         let destination = SessionInbox.sessionDirectory(id, in: outputDirectory)
-        guard !fileManager.fileExists(atPath: destination.path) else { return }
+        if T3DeliveryFiles.read(id: id, in: outputDirectory)?.contentStoredInT3 == true {
+            // The original Mac bundle is already gone; the phone still needs its cleanup receipt.
+            mirrored[id] = Mirrored(target: target, since: now, isRouted: true)
+            return
+        }
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            // Reattach status forwarding after the receiver restarts, including offline batches.
+            mirrored[id] = Mirrored(target: target, since: now,
+                                    isRouted: (try? SessionInbox.loadSession(id: id, in: outputDirectory).t3Route) != nil)
+            return
+        }
         let staging = stagingDirectory().appendingPathComponent("\(id)-\(UUID().uuidString.prefix(8))", isDirectory: true)
         defer { try? fileManager.removeItem(at: staging) }
-        let remote = "\(Self.remoteRoot)/\(SessionWriter.sessionsFolder)/\(id)"
+        let remote = "\(remoteDirectory)/\(SessionWriter.sessionsFolder)/\(id)"
         do {
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
             // session.json alone first: it says whether the bundle is ours before the images come over
@@ -278,7 +297,8 @@ public actor DeviceMirror {
             // The app may have marked it already (an old claim); status is the Mac side's to write
             try? fileManager.removeItem(at: bundle.appendingPathComponent(SessionInbox.statusFile))
             let promptURL = bundle.appendingPathComponent(SessionInbox.promptFile)
-            if let prompt = try? String(contentsOf: promptURL, encoding: .utf8) {
+            if session.t3Route?.delivery != T3DeliveryFiles.ownedDelivery,
+               let prompt = try? String(contentsOf: promptURL, encoding: .utf8) {
                 try Data(Self.relocatedPrompt(prompt, to: destination).utf8).write(to: promptURL, options: .atomic)
             }
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -286,12 +306,13 @@ public actor DeviceMirror {
             try fileManager.moveItem(at: bundle, to: destination)
             try? Data("\(SessionWriter.sessionsFolder)/\(id)\n".utf8)
                 .write(to: outputDirectory.appendingPathComponent("latest"), options: .atomic)
-            mirrored[id] = Mirrored(target: target, since: now)
+            mirrored[id] = Mirrored(target: target, since: now, isRouted: session.t3Route != nil)
             // Consumers scan every session folder twice a second, so the Mac copy can't grow forever
             SessionInbox.prune(keeping: Self.keptSessions, in: outputDirectory, now: now)
             if targets[target]?.belongsHere == nil { targets[target]?.belongsHere = true }
             log("annotate: session \(id) arrived from \(deviceNames[target.device] ?? target.device)")
         } catch {
+            seen.remove(id) // A failed developer connection must be retried on the next poll.
             log("annotate: couldn't copy session \(id) from \(deviceNames[target.device] ?? target.device): \(error)")
         }
     }
@@ -302,14 +323,30 @@ public actor DeviceMirror {
     /// brings the user's replies back.
     private func forwardStatuses(now: Date) async {
         for (id, entry) in mirrored {
-            if now.timeIntervalSince(entry.since) > Self.trackingLimit {
+            if !entry.isRouted, now.timeIntervalSince(entry.since) > Self.trackingLimit {
                 mirrored[id] = nil
                 continue
             }
-            let status = SessionInbox.sessionDirectory(id, in: outputDirectory).appendingPathComponent(SessionInbox.statusFile)
+            let directory = SessionInbox.sessionDirectory(id, in: outputDirectory)
+            let ownedReceipt = T3DeliveryFiles.receiptURL(id: id, in: outputDirectory)
+            let hasOwnedReceipt = fileManagerExists(ownedReceipt)
+            let receipt = hasOwnedReceipt ? ownedReceipt : directory.appendingPathComponent(T3DeliveryReceipt.fileName)
+            if let data = try? Data(contentsOf: receipt), data != entry.receiptForwarded {
+                let target = hasOwnedReceipt
+                    ? "\(remoteDirectory)/\(T3DeliveryFiles.folder)/\(id).json"
+                    : "\(remoteDirectory)/\(SessionWriter.sessionsFolder)/\(id)/\(T3DeliveryReceipt.fileName)"
+                if (try? await bridge.copy(receipt, to: target, on: entry.target.device, app: entry.target.app)) != nil {
+                    mirrored[id]?.receiptForwarded = data
+                }
+            }
+            if hasOwnedReceipt, mirrored[id]?.receiptForwarded != nil {
+                mirrored[id] = nil
+                continue
+            }
+            let status = directory.appendingPathComponent(SessionInbox.statusFile)
             guard let data = try? Data(contentsOf: status) else { continue }
             if data != entry.forwarded {
-                let remote = "\(Self.remoteRoot)/\(SessionWriter.sessionsFolder)/\(id)/\(SessionInbox.statusFile)"
+                let remote = "\(remoteDirectory)/\(SessionWriter.sessionsFolder)/\(id)/\(SessionInbox.statusFile)"
                 // On failure the next tick retries: `forwarded` still holds the old contents
                 if (try? await bridge.copy(status, to: remote, on: entry.target.device, app: entry.target.app)) != nil {
                     mirrored[id]?.forwarded = data
@@ -323,7 +360,8 @@ public actor DeviceMirror {
             }
             // An agent may ask after reporting done, so a final session stays tracked until its
             // questions are answered; only then is there nothing left to carry either way
-            if let decoded, decoded.isFinal, !hasQuestion, mirrored[id]?.forwarded == data {
+            if let decoded, decoded.isFinal, !hasQuestion, mirrored[id]?.forwarded == data,
+               !entry.isRouted || mirrored[id]?.receiptForwarded != nil {
                 mirrored[id] = nil
             }
         }
@@ -336,7 +374,7 @@ public actor DeviceMirror {
         let local = SessionInbox.sessionDirectory(id, in: outputDirectory).appendingPathComponent(SessionInbox.repliesFile)
         let staging = stagingDirectory().appendingPathComponent("\(id)-replies-\(UUID().uuidString.prefix(8)).json")
         defer { try? fileManager.removeItem(at: staging) }
-        let remote = "\(Self.remoteRoot)/\(SessionWriter.sessionsFolder)/\(id)/\(SessionInbox.repliesFile)"
+        let remote = "\(remoteDirectory)/\(SessionWriter.sessionsFolder)/\(id)/\(SessionInbox.repliesFile)"
         // Fails until the user first replies: the app creates the file with the first answer
         guard (try? await bridge.copy(from: remote, on: target.device, app: target.app, to: staging)) != nil,
               let data = try? Data(contentsOf: staging),
@@ -356,9 +394,17 @@ public actor DeviceMirror {
         for (target, state) in targets
         where state.belongsHere == true && isOpen(state, now: now) && now.timeIntervalSince(state.lastPresencePush) >= Self.presenceInterval {
             targets[target]?.lastPresencePush = now
-            _ = try? await bridge.copy(local, to: "\(Self.remoteRoot)/\(AgentPresenceFile.fileName)", on: target.device, app: target.app)
+            for name in sharedFiles {
+                let shared = outputDirectory.appendingPathComponent(name)
+                if fileManagerExists(shared) {
+                    _ = try? await bridge.copy(shared, to: "\(remoteDirectory)/\(name)", on: target.device, app: target.app)
+                }
+            }
+            _ = try? await bridge.copy(local, to: "\(remoteDirectory)/\(AgentPresenceFile.fileName)", on: target.device, app: target.app)
         }
     }
+
+    private func fileManagerExists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
 
     private func stagingDirectory() -> URL {
         let url = outputDirectory.appendingPathComponent(".incoming", isDirectory: true)

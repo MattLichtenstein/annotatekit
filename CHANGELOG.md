@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Opt-in T3 routing: long-press Send chooses New thread or five recent project threads,
+  process-local destination reuse, durable offline batches, and a separate Mac receiver.
+  The native menu supports holding, dragging to a destination, and releasing to select.
+  Optional confirmed-delivery cleanup uploads a complete ZIP and annotated previews through
+  existing T3 client RPCs with stable command/message IDs; T3 itself is unchanged.
+  Additive schema-1 route delivery, catalog capability, and ownership receipt fields
+  distinguish T3-owned content from retained legacy file-reference bundles. Credentials
+  remain Mac-only. Owned feedback clears after durable queue acknowledgement, with
+  receipts forwarded independently of deleted bundles. Generic prompts use portable paths.
+- An optional `onDismiss` callback after review releases its window, so host apps can restore shake invocation explicitly.
+- A review-toolbar Draw/Scroll button with one hand icon and a stable bottom position. Scroll leaves native app pan gestures intact while taps and
+  holds still select annotation targets and suppress the host control's tap action. Editing a note
+  freezes a fresh capture; saving resumes scrolling. Saved annotations keep their original screen,
+  coordinates, and source metadata. Drag mode is transient and changes no session schema or CLI contract.
+
+### Changed
+- New annotation threads follow T3 workspace defaults, including new checkouts, project overrides, and start-from-origin. Launch arguments persist before creation for stable retries; existing destinations keep their checkout.
+- T3 queued confirmations expire after six seconds, clear on closing annotations, and do not replay completed batches after relaunch. Receipt-driven content cleanup stays independent of the notice.
+- No-launcher installations hide their idle overlay window after closing and reveal it on the next invocation, releasing UIKit motion routing to the host app.
+- The review toolbar closes annotation mode with an X instead of a back chevron, preserving notes.
+- The mode button uses a fixed material circle and opacity-only press feedback to avoid Liquid Glass tint morphing.
+- Scroll review omits the instructional hint while keeping delivery updates.
+- Review controls dock above the native tab bar and stay on that baseline throughout an active session.
+- The animated screen-edge glow and bottom wash share one 0.9-second entrance at 75% intensity, stay visible in both modes, and honor Reduce Motion.
+
 ## [1.0.0] - 2026-11-03
 
 First stable release: the public API (`Annotate.install`, `AnnotateOptions`, `AnnotateBridge`, the CLI

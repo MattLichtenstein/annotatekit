@@ -18,6 +18,43 @@ decode them without UIKit.
 
 ## Folder layout
 
+### Opt-in T3 routing
+
+Routed bundles live in a separate `.annotate/t3/sessions/<id>` inbox. `session.json`
+remains schema 1 and adds optional `t3Route: {projectID, threadID?, conversationID, delivery?}`.
+A missing threadID means create/reuse the new thread identified by conversationID.
+The UUID is created in memory and written into each batch; relaunch does not restore
+it as the current destination. Missing route fields preserve legacy decoding.
+
+`t3-threads.json` is version 1 with projectID, updatedAt, isAvailable, optional
+supportsOwnedDelivery, and up to five `{id,title,isWorking}` rows. The receiver shares
+only this catalog, presence/status, and delivery receipts, never credentials.
+
+A route with `delivery: "t3-owned-bundle-v1"` requires T3 to own the complete ZIP and
+optional preview attachments before acknowledging cleanup. It uses existing T3 client
+RPCs, stable command/message IDs, and persisted upload IDs, without T3 changes. Its
+receipt lives outside deleted content at `deliveries/<id>.json`, with version 1,
+sessionID, threadID, title, link, and optional `contentStoredInT3: true`. The phone
+prepares the deliveries folder before committing session.json. Receipts survive
+bundle deletion and receiver restart. Only matching owned routes plus a true
+ownership receipt authorize content deletion. The Mac writes the receipt before
+clearing its original, temporary ZIP, staging copies, and per-batch upload state;
+the phone clears acknowledged content while active or at its host's next cleanup call.
+Unsent/pending content remains. Active canvas memory lasts until closed.
+
+Legacy routes have no ownership marker; their `sessions/<id>/t3-delivery.json`
+receipt omits contentStoredInT3 and cannot authorize cleanup. Messages reference
+local files, which must remain until explicit cleanup. Receipt means queued,
+not agent success. Existing status.json states are unchanged. `.routing/` contains
+Mac-only conversation/grant IDs, complete pending launch arguments (including the
+resolved workspace strategy), and pending batch attachment IDs/temporary ZIPs.
+New conversations resolve the effective T3 workspace setting once and persist it
+before launch. Older interrupted launch records retain their original root request.
+Credentials live outside the inbox entirely. Minimal receipts and conversation
+mappings remain after owned content cleanup. Never give this inbox to a legacy
+consumer. All routed sessions survive automatic pruning pending confirmed delivery
+or explicit legacy cleanup. T3's own copies follow its conversation lifecycle.
+
 ```
 .annotate/
   .gitignore               "*", so nothing here is committed
@@ -48,6 +85,11 @@ Session ids are sortable UTC timestamps plus a short suffix: `20261028-141502-a1
 | `agents/`, `agent.json`, `hub.json` | `annotate` processes | the app (`agent.json`), other `annotate` processes |
 
 ## session.json: `AnnotationSession`
+
+The review toolbar's Draw/Scroll selection is process-local UI state and is not serialized. Notes
+selected while scrolling each retain the frozen capture, coordinates, and source information from
+their selection; changing drag modes does not move earlier notes onto new screen images. These
+bundles remain schema version 1 and are readable by the existing 1.0.0 Mac receiver.
 
 | Field | Type | Notes |
 |---|---|---|

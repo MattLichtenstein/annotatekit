@@ -16,6 +16,71 @@ simulator. Everything is behind `#if DEBUG`, so Release builds carry none of it.
 
 ## Install
 
+### Optional T3 routing (maintained fork)
+
+Set `AnnotateOptions.t3ProjectID` and use a **dedicated** output directory ending in
+`.annotate/t3` (phone: `Documents/.annotate/t3`). Holding Send with ready notes opens
+its native menu; keep holding, drag to New thread or one of five recent project
+threads, and release to send. Lifting without selecting leaves the menu open for a tap.
+Normal Send creates a thread when none is selected; later taps reuse it until the app
+process closes. Working destinations receive a queued next turn. The current
+destination is shown only inside the menu.
+New annotation threads follow T3's effective workspace preference (including project
+overrides and inherited `t3.json` defaults). New-checkout mode asks T3 to create and
+bind a worktree from the project's default branch, honoring its start-from-origin
+setting. Existing-thread sends keep that thread's checkout. The resolved launch
+arguments are saved before creation, so retrying after a settings change cannot
+create a second thread or change its workspace. If settings cannot be read, the
+batch remains pending rather than silently using the project root. Pre-upgrade
+interrupted launches preserve their original request and implicit root binding.
+
+Run this fork's separate Mac receiver (Node 22+ and Xcode required):
+
+```sh
+swift run annotate-t3 login --origin http://127.0.0.1:3773
+swift run annotate-t3 serve --project <project-id> --root /absolute/source/checkout --node /absolute/node
+```
+
+Approve the printed sign-in URL in T3. The adapter restricts catalogs and every
+route to the configured project even if OAuth authorizes broader access. Credentials
+stay owner-only in `~/Library/Application Support/AnnotateKit/`, outside the mirror.
+They never reach the phone. `--credentials` overrides the private OAuth file path.
+Reapprove expired/revoked access with `login`. Ambiguous sends under a changed grant
+are retained for reconciliation, never blindly resent as new messages.
+
+Opt into confirmed-delivery cleanup with `clearsT3DeliveredFeedback: true`. The Mac
+uses the existing T3 protocol-2 client API to upload a complete ZIP plus up to seven
+annotated-image previews, then enqueue them using stable command/message IDs.
+The matching installed T3 CLI issues a separate, owner-only orchestration read/operate
+token after OAuth authorization is checked. T3 Code itself is unchanged; no fork is
+required. The ZIP limit is 50 MiB and each preview limit is 10 MiB. Missing capabilities,
+failed uploads, and ambiguous responses preserve the batch.
+
+Only after T3 durably accepts the queued message does the Mac write a content-free
+receipt and clear its bundle, archive, staging copies, and per-batch upload state.
+The phone processes the receipt while active; hosts can also call
+`await Annotate.clearDeliveredFeedback(in: outputDirectory)` on launch/foreground
+without installing the overlay. An active canvas remains until closed; unsent notes
+are preserved. Minimal receipts and routing IDs remain for retries. T3 keeps its own
+conversation/attachment copies according to its lifecycle. Agents reply in T3.
+Generic prompts distinguish Fix changes from Question explanations and use portable
+artifact paths inside the attached ZIP.
+
+Offline batches reach the Mac over the paired developer connection. “Queued in thread”
+means delivered, not agent completion. This confirmation lasts six seconds and clears
+on closing the overlay; completed receipts are not replayed on reopen or launch.
+Pending Sends still resume delivery tracking. A missing cleanup option keeps legacy
+reference-only delivery: messages reference absolute Mac bundle paths, so those files
+must remain until explicit cleanup. New and legacy sessions remain schema 1 through
+optional routing, catalog-capability, and receipt fields. Routed batches are excluded
+from automatic pruning. Legacy Homebrew consumers must stay on `.annotate/sessions`,
+never the routed inbox. Closing the app forgets the current destination while
+preserving pending batches. Retiring the integration requires revoking both its
+OAuth connection and its separately labeled local host session.
+
+Run `node --test Tests/AnnotateT3Tests/*.test.mjs` and `swift test` for transport,
+cleanup, device-receipt, and compatibility coverage. Tests do not contact live T3.
+
 Tell your agent:
 
 > Set up AnnotateKit from github.com/ooolzhas/annotatekit in this app.
@@ -81,6 +146,13 @@ The app's iOS deployment target must be 17.0 or later (Expo: `ios.deploymentTarg
 `expo-build-properties`). The `annotate` CLI works the same as for native apps.
 
 ## Usage
+
+The review toolbar's **Drag mode** button switches between **Draw** and **Scroll**. It keeps one hand icon in a fixed material circle above the native tab bar; blue indicates Scroll.
+The screen-edge glow and bottom wash ease in together over 0.9 seconds at 75% intensity when review opens and keep animating while scrolling. Scroll mode has no instructional hint; delivery updates still appear.
+In Scroll mode, swipes scroll the real app while taps and holds still create annotations; tapping
+does not activate the app's buttons. A note freezes its current screen while you write, then saving
+returns to live scrolling. Existing notes retain their original captures and remain available in My Notes.
+The toolbar's **X** closes annotation mode and keeps unsent notes. Hosts that invoke review through a shake responder can use `AnnotateOptions.onDismiss` to restore focus after the SDK releases its window.
 
 1. Tap **Annotate** to freeze the screen
 2. **Draw**, **tap** an element, or **hold** on a spot

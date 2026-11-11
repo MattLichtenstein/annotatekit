@@ -1,7 +1,8 @@
 // The overlay lives in its own UIWindow above the app, so it works for SwiftUI and UIKit apps alike
 // and never touches the app's view hierarchy.
 // Idle: the window only accepts touches on the launcher; everything else falls through to the app.
-// Active: it takes every touch and becomes key so Return / Esc / ↑↓ / ⌘Z arrive as key commands.
+// Drawing/editing: it takes every touch and becomes key for keyboard commands. Browsing: only the
+// review bar stays interactive here; host-window tap recognition leaves native app pans intact.
 // OverlayInstaller attaches the window once a scene is active (`install` may run before that); a
 // launch-time start then waits for the app's first settled screen.
 // With the launcher hidden, no window exists until annotate mode first starts.
@@ -14,6 +15,7 @@ import SwiftUI
 import UIKit
 
 @MainActor
+/// Installs the overlay window and preserves the host app's native touch and keyboard ownership.
 final class OverlayInstaller {
     static let shared = OverlayInstaller()
 
@@ -61,6 +63,8 @@ final class OverlayInstaller {
     /// Called by `Annotate.start()`: a hidden launcher means the window may not exist yet.
     func ensureAttached() {
         attachIfPossible(force: true)
+        // No-launcher installations hide the idle window entirely. Reuse it on the next invocation.
+        window?.isHidden = false
     }
 
     private func attachIfPossible(force: Bool = false) {
@@ -75,7 +79,7 @@ final class OverlayInstaller {
         self.window = window
         controller.window = window
         // `Annotate.start()` may have run before the window existed; finish activating now
-        if controller.isActive {
+        if controller.isActive, !controller.isBrowsing {
             window.activate()
         }
 
@@ -93,6 +97,8 @@ final class OverlayWindow: UIWindow {
     private let controller: AnnotateController
     private let host: OverlayHostingController
     private weak var previousKeyWindow: UIWindow?
+    private let liveInteraction = LiveAppInteraction()
+    private var passesAppSwipes = false
 
     init(windowScene: UIWindowScene, controller: AnnotateController) {
         self.controller = controller
@@ -110,10 +116,27 @@ final class OverlayWindow: UIWindow {
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard controller.isActive || controller.launcherHitFrame.contains(point) else { return nil }
+        if controller.isBrowsing, !controller.reviewBarFrame.contains(point) { return nil }
         return super.hitTest(point, with: event)
     }
 
+    /// Only the review bar stays in this window during browsing; taps are intercepted in the host.
+    func setAppScrollingEnabled(_ enabled: Bool) {
+        guard enabled != passesAppSwipes else { return }
+        passesAppSwipes = enabled
+        if enabled {
+            deactivate()
+            liveInteraction.attach(to: ElementScanner.appWindows(excluding: self)) { [weak controller] point, intent in
+                controller?.selectWhileBrowsing(at: point, intent: intent)
+            }
+        } else {
+            liveInteraction.detach()
+            if controller.isActive { activate() }
+        }
+    }
+
     func activate() {
+        guard !isKeyWindow else { return }
         previousKeyWindow = windowScene?.windows.first { $0.isKeyWindow && $0 !== self }
         makeKey()
         host.becomeFirstResponder()
@@ -123,6 +146,11 @@ final class OverlayWindow: UIWindow {
         host.resignFirstResponder()
         previousKeyWindow?.makeKey()
         previousKeyWindow = nil
+        if !controller.isActive, !controller.options.showsLauncher {
+            // A transparent, hit-test-passing window can still participate in UIKit motion routing.
+            // With no launcher to display, remove it from the visible window stack after closing.
+            isHidden = true
+        }
     }
 }
 

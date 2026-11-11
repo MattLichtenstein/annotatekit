@@ -472,3 +472,62 @@ struct Checkout {
         #expect(SessionInbox.pendingSessionIDs(in: output) == [id])
     }
 }
+
+/// Routed inboxes preserve checkout isolation while sharing only the explicit catalog/receipt files.
+@Suite struct T3MirrorTests {
+    @Test func forwardsOwnedReceiptAfterMacContentWasDeleted() async throws {
+        let checkout = try Checkout()
+        defer { checkout.remove() }
+        let app = "com.example.app"
+        let bridge = FakeBridge(apps: [app])
+        let output = checkout.output.appendingPathComponent("t3")
+        let id = try AgentFixtures.writeSession(to: output, app: AppInfo(bundleID: app, installFile: checkout.installFile))
+        let directory = SessionInbox.sessionDirectory(id, in: output)
+        let remote = "Documents/.annotate/t3"
+        bridge.put(try Data(contentsOf: directory.appendingPathComponent("session.json")), at: "\(remote)/sessions/\(id)/session.json", app: app)
+        try FileManager.default.createDirectory(at: output.appendingPathComponent(T3DeliveryFiles.folder), withIntermediateDirectories: true)
+        let receipt = T3DeliveryReceipt(sessionID: id, threadID: "thread", title: "Feedback", link: "local", contentStoredInT3: true)
+        try AnnotationSession.encoder.encode(receipt).write(to: T3DeliveryFiles.receiptURL(id: id, in: output))
+        try FileManager.default.removeItem(at: directory)
+
+        let mirror = DeviceMirror(outputDirectory: output, cutoffID: "", bridge: bridge, projectBundleIDs: [app],
+            projectRoot: checkout.root, remoteDirectory: remote)
+        await mirror.tick()
+        let forwarded = try #require(bridge.file("\(remote)/deliveries/\(id).json", app: app))
+        #expect(try AnnotationSession.decoder.decode(T3DeliveryReceipt.self, from: forwarded).contentStoredInT3 == true)
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        #expect(bridge.file("\(remote)/sessions/\(id)/t3-delivery.json", app: app) == nil)
+    }
+
+    @Test func mirrorsOldOfflineBatchesAndReattachesReceiptsAfterRestart() async throws {
+        let checkout = try Checkout()
+        defer { checkout.remove() }
+        let app = "com.example.app"
+        let bridge = FakeBridge(apps: [app])
+        let output = checkout.output.appendingPathComponent("t3")
+        let id = try AgentFixtures.writeSession(to: output, app: AppInfo(bundleID: app, installFile: checkout.installFile))
+        var session = try SessionInbox.loadSession(id: id, in: output)
+        session.t3Route = T3Route(projectID: "koa")
+        let directory = SessionInbox.sessionDirectory(id, in: output)
+        try AnnotationSession.encoder.encode(session).write(to: directory.appendingPathComponent("session.json"))
+        let remote = "Documents/.annotate/t3"
+        for name in ["session.json", "prompt.md"] {
+            bridge.put(try Data(contentsOf: directory.appendingPathComponent(name)), at: "\(remote)/sessions/\(id)/\(name)", app: app)
+        }
+        let beacon = AppBeacon(bundleID: app, installFile: checkout.installFile)
+        bridge.put(try AnnotationSession.encoder.encode(beacon), at: "\(remote)/app.json", app: app)
+        let catalog = T3ThreadCatalog(projectID: "koa", isAvailable: true, threads: [])
+        try AnnotationSession.encoder.encode(catalog).write(to: output.appendingPathComponent(T3ThreadCatalog.fileName))
+        try Data("do not mirror".utf8).write(to: output.appendingPathComponent("credentials.json"))
+        try AgentPresenceFile.write(AgentPresence(agent: "T3", mode: .push, via: "t3"), in: output)
+        let receipt = T3DeliveryReceipt(sessionID: id, threadID: "thread", title: "Review", link: "local")
+        try AnnotationSession.encoder.encode(receipt).write(to: directory.appendingPathComponent(T3DeliveryReceipt.fileName))
+        let mirror = DeviceMirror(outputDirectory: output, cutoffID: "", bridge: bridge, projectBundleIDs: [app],
+            projectRoot: checkout.root, remoteDirectory: remote, sharedFiles: [T3ThreadCatalog.fileName])
+        await mirror.tick()
+        #expect(bridge.file("\(remote)/\(T3ThreadCatalog.fileName)", app: app) != nil)
+        #expect(bridge.file("\(remote)/sessions/\(id)/\(T3DeliveryReceipt.fileName)", app: app) != nil)
+        #expect(bridge.file("\(remote)/credentials.json", app: app) == nil)
+        #expect(bridge.file("Documents/.annotate/sessions/\(id)/session.json", app: app) == nil)
+    }
+}

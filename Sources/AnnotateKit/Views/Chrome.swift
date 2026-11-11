@@ -4,7 +4,8 @@
 // the sent pin's spinner or outcome glyph, and the open draft's +; 9378:6116 / 9378:6440 / 9378:5659),
 // the status indicator dot with its pulsing wave (9378:5495), white sketch strokes, and the
 // review bar shown when no pin is open (9276:27550: back, the note count and ↑, each its own glass
-// shape; the count opens the notes sheet). Also owns the hint
+// shape; the count opens the notes sheet). The review bar also switches drags between Draw and Scroll,
+// preserving tap selection in both modes. Also owns the hint
 // line drawn above that bar (9272:17120 / 17213 / 17307, 9276:28045), which says how to annotate or
 // whether an agent is connected, and narrates a Send with the seconds since it started
 // (9273:18004 / 18099 / 18194); its copy and dot come from `ReviewHint` in AnnotateCore. It is a label,
@@ -403,7 +404,7 @@ struct SketchStrokes: View {
 
 // MARK: - Review bar
 
-/// Bottom bar while no pin is open (Figma 9276:27550): a back chevron that keeps the notes, the note
+/// Bottom bar while no pin is open: an X that closes annotation mode and keeps notes, drag mode, the note
 /// count, and ↑, each its own 52pt glass shape 8pt apart. The count is a button that opens the notes
 /// sheet (design choice), where notes open, delete and clear. ↑ is tinted blue while there is
 /// something to send, and VoiceOver calls it Save while no agent listens. Fills the width it is
@@ -424,8 +425,16 @@ struct ReviewBar: View {
         // One glass group (design choice): pressing one piece makes it swell into its neighbours
         AnnotateGlassGroup(spacing: Self.spacing) {
         HStack(spacing: Self.spacing) {
-            // A chevron, not ×, because leaving annotate mode keeps the notes (9276:27551)
-            BarIconButton(systemName: "chevron.left", label: "Back") { controller.stop() }
+            BarIconButton(systemName: "xmark", label: "Close annotations") { controller.stop() }
+
+            DragModeButton(isScrolling: controller.dragMode == .scroll) {
+                controller.toggleDragMode()
+            }
+            .accessibilityValue(controller.dragMode == .draw ? "Draw" : "Scroll")
+            .accessibilityHint(controller.dragMode == .draw
+                ? "Switch to scrolling the app; taps still select annotations"
+                : "Switch to drawing annotations")
+            .accessibilityIdentifier("annotate-drag-mode")
 
             // 9276:27556 — SF Pro Medium 17 / 22, centered in a capsule that takes the rest of the row
             Button {
@@ -447,20 +456,58 @@ struct ReviewBar: View {
             .accessibilityHint("Show the notes")
 
             // 9276:27561 — white ↑ on blue-tinted glass; plain glass and a dimmed glyph with nothing to send
-            BarIconButton(
-                systemName: "arrow.up",
-                label: controller.reviewHint.actionTitle,
-                tint: canSend ? AnnotateStyle.action : nil,
-                isDimmed: !canSend
-            ) {
-                controller.send(keepAnnotating: true)
+            if controller.options.t3ProjectID != nil {
+                T3SendButton(controller: controller)
+                    .frame(width: AnnotateController.barHeight, height: AnnotateController.barHeight)
+            } else {
+                BarIconButton(
+                    systemName: "arrow.up",
+                    label: controller.reviewHint.actionTitle,
+                    tint: canSend ? AnnotateStyle.action : nil,
+                    isDimmed: !canSend
+                ) {
+                    controller.send(keepAnnotating: true)
+                }
+                .disabled(!canSend)
             }
-            .disabled(!canSend)
         }
         }
         .frame(height: AnnotateController.barHeight)
         // Glass alone isn't hit-testable; taps in the gaps must not reach the frozen screen
         .contentShape(Rectangle())
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { frame in
+            controller.updateReviewBarFrame(frame)
+        }
+    }
+}
+
+/// Keeps the mode control stationary: changing Liquid Glass tint can morph a button off its baseline.
+private struct DragModeButton: View {
+    let isScrolling: Bool
+    let action: () -> Void
+
+    private enum UX {
+        static let glyphSize: CGFloat = 17
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "hand.draw")
+                .font(.system(size: UX.glyphSize, weight: .medium))
+                .foregroundStyle(isScrolling ? Color.white : .primary)
+                .frame(width: AnnotateController.barHeight, height: AnnotateController.barHeight)
+                .background {
+                    Circle().fill(.regularMaterial)
+                    Circle().fill(AnnotateStyle.action).opacity(isScrolling ? 1 : 0)
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(ChromeButtonStyle())
+        .accessibilityLabel("Drag mode")
+        // Keep feedback to opacity; the surface and glyph never morph or spring between modes.
+        .transaction { $0.animation = nil }
     }
 }
 

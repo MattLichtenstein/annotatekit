@@ -1,4 +1,6 @@
-// Root of the overlay window: the launcher while idle, and while annotating the frozen screen
+// Root of the overlay window: the live app plus review bar in Scroll mode, the launcher while idle,
+// and a persistent animated blue glow in either active mode that fades in on entry,
+// and while drawing or editing a note the frozen screen
 // dimmed with a pulsing blue edge glow, the touch catcher that feeds the controller (draw / tap / hold),
 // every pin's white markers and number badges (after a Send, the sent pins with spinners that turn
 // into the agent's outcome), and the bottom chrome docked to the keyboard or the home indicator: the
@@ -7,8 +9,9 @@
 // while annotate mode is open), all over a blue frost that runs from the chrome's top down to the
 // screen's bottom. The notes sheet (every note and the last Send's outcomes) hangs off the chrome.
 // Motion (no Figma motion context): entering and leaving annotate mode fades the frozen screen, its
-// dim, the edge glow and the frost in and out over the same `modeDuration` the bottom chrome
-// (`BottomChrome`, a separate view so it can) takes to rise into place and sink away; swaps between
+// dim in and out over the same `modeDuration` the bottom chrome
+// uses, while the softer edge glow and bottom frost ease in together more gradually. The bottom chrome
+// (`BottomChrome`) rises into place and sinks away; swaps between
 // the review bar and the comment or reply card follow one rule on the same timing: the arriving
 // piece rises from below like the chrome does, the leaving one shrinks and fades in place like the
 // launcher pill; each pin keeps one marker whose glyph and fill change in place; the launcher pill scales down and fades about its own center, and
@@ -26,6 +29,7 @@ import AnnotateCore
 #endif
 import SwiftUI
 
+/// Keeps review controls and synchronized glow layers over a frozen canvas or the live scrolling app.
 struct OverlayRoot: View {
     let controller: AnnotateController
 
@@ -38,19 +42,16 @@ struct OverlayRoot: View {
     /// How far below its place the bottom chrome starts as annotate mode opens (and ends as it closes).
     fileprivate static let chromeEntranceOffset: CGFloat = 48
     /// How long entering and leaving annotate mode takes: the chrome's rise and the fade of the frozen
-    /// screen, its dim, glow and frost all share it, so they arrive and leave together.
+    /// screen and its dim share it; both glow layers have a slower, shared entrance.
     static let modeDuration: Double = 0.3
     /// The chrome's rise and sink, and the launcher's scale.
     fileprivate static let modeAnimation: Animation = .snappy(duration: modeDuration)
-    /// The dim, glow and frost fade on an ease rather than the chrome's spring: a spring on opacity
-    /// is all but done in its first third and reads as a pop, an ease reads as a gradual fade.
-    private static let backdropFade: Animation = .easeInOut(duration: modeDuration)
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if controller.isActive {
                 ActiveOverlay(controller: controller, chromeTop: chromeTop)
-                    .transition(.opacity.animation(Self.backdropFade))
+                    .transition(.opacity)
                 // A sibling rather than part of ActiveOverlay so it gets its own entrance: only the
                 // views an `if` inserts run a transition, never their children
                 BottomChrome(controller: controller, chromeTop: $chromeTop)
@@ -153,14 +154,30 @@ private struct BottomChrome: View {
                         .transition(swapTransition)
                 }
             case .review:
-                VStack(spacing: Self.hintGap) {
-                    ReviewHintLine(hint: controller.reviewHint, startedAt: controller.deliveryStartedAt)
+                // The hint floats above a fixed-height bar. Including it in a VStack changed the
+                // bar's local origin during mode switches and made its non-glass button bounce.
+                ZStack(alignment: .bottom) {
+                    ReviewBar(controller: controller)
+                        .padding(.horizontal, Self.screenInset)
+
+                    // Keep Send progress and agent questions visible while the app can scroll.
+                    if let message = controller.t3DeliveryText {
+                        Text(message)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
+                            .shadow(radius: ReviewHintLine.shadowRadius)
+                            .padding(.horizontal, Self.screenInset)
+                            .offset(y: -AnnotateController.barHeight - Self.hintGap)
+                            .allowsHitTesting(false)
+                    } else if !controller.isBrowsing || controller.delivery != nil {
+                        ReviewHintLine(hint: controller.reviewHint, startedAt: controller.deliveryStartedAt)
                         // Delivery narration ("Changes applied, reinstalling 9s") runs wider than
                         // the gestures hint: keep it on one centered line within the bar's 34pt insets
                         .padding(.horizontal, Self.screenInset)
-                    ReviewBar(controller: controller)
-                        .padding(.horizontal, Self.screenInset)
+                        .offset(y: -AnnotateController.barHeight - Self.hintGap)
+                    }
                 }
+                .frame(height: AnnotateController.barHeight)
                 // Anchored to the home indicator: the bar never rides the keyboard
                 .padding(.bottom, belowBar)
                 .transition(swapTransition)
@@ -226,6 +243,15 @@ private struct BottomChrome: View {
 
 private struct ActiveOverlay: View {
     let controller: AnnotateController
+    @State private var isGlowRevealed = false
+
+    private enum UX {
+        static let glowEntranceDuration: Double = 0.9
+        static let glowOpacity: Double = 0.75
+    }
+
+    /// One reveal state keeps the bottom wash and edge rings in step across gesture-mode changes.
+    private var glowOpacity: Double { isGlowRevealed ? UX.glowOpacity : 0 }
 
     /// Top edge of the bottom chrome in screen points (BottomChrome measures it); the gradient starts
     /// here. Nil until the first layout pass.
@@ -234,9 +260,6 @@ private struct ActiveOverlay: View {
     /// Not in Figma (design choice): pins' badges scale up from their own center on a spring.
     static let badgeAppearance: AnyTransition = .scale(scale: 0.3).combined(with: .opacity)
         .animation(.spring(duration: 0.45, bounce: 0.35))
-    /// The glow and frost's blue ↔ green crossfade when Claude starts or stops working.
-    static let paletteChange: Animation = .easeInOut(duration: 0.8)
-
     var body: some View {
         let bounds = controller.bounds
         let openID = controller.draft?.annotation.id
@@ -247,71 +270,70 @@ private struct ActiveOverlay: View {
         let sent = controller.sentPinsOnScreen
 
         ZStack(alignment: .topLeading) {
-            if let frozen = controller.frozenImage {
+            if !controller.isBrowsing, let frozen = controller.frozenImage {
                 Image(uiImage: frozen)
                     .resizable()
                     .frame(width: bounds.width, height: bounds.height)
                     .allowsHitTesting(false)
             }
 
-            Color.black.opacity(AnnotateStyle.dimOpacity)
-                .frame(width: bounds.width, height: bounds.height)
-                .allowsHitTesting(false)
+            if !controller.isBrowsing {
+                Color.black.opacity(AnnotateStyle.dimOpacity)
+                    .frame(width: bounds.width, height: bounds.height)
+                    .allowsHitTesting(false)
+            }
 
             // Figma 9257:13546: the Overlay layer (dim + glow, 9257:13547) sits below every marker
-            // and badge, so pins near the edge stay pure white. Green while Claude works (design
-            // choice): one glow per palette, crossfading, so only one renders at rest
-            ZStack {
-                if controller.isAgentWorking {
-                    ScreenGlow(palette: .working).transition(.opacity)
-                } else {
-                    ScreenGlow(palette: .idle).transition(.opacity)
-                }
-            }
-            .frame(width: bounds.width, height: bounds.height)
-            .allowsHitTesting(false)
-            .animation(Self.paletteChange, value: controller.isAgentWorking)
+            // and badge, so pins near the edge stay pure white. Keep the same blue layers mounted
+            // in both gesture modes so browsing never removes or restarts their animation.
+            ScreenGlow(palette: .idle)
+                .frame(width: bounds.width, height: bounds.height)
+                .opacity(glowOpacity)
+                .allowsHitTesting(false)
 
             // Figma layer order: Overlay (dim + glow), then the gradient, then pins and chrome
             bottomFrost
+                .opacity(glowOpacity)
 
-            captureLayer
+            if !controller.isBrowsing {
+                captureLayer
 
-            ForEach(saved + sent) { annotation in
-                PinMarker(
-                    annotation: annotation,
-                    strokes: annotation.sketchInScreenPoints,
-                    bounds: bounds
-                )
-                // Saving swaps the open draft's marker for this one; a fade-in here blinked the
-                // strokes out for a frame. Badges still animate
-                .transition(.identity)
-            }
-
-            if let draft = controller.draft {
-                PinMarker(annotation: draft.annotation, strokes: draft.strokes, bounds: bounds)
-            }
-
-            LiveStrokeLayer(controller: controller, size: bounds.size)
-
-            // One marker per pin, keyed by the pin: saving the open pin, reopening a saved one and
-            // sending only change its face (Figma 9378:5659 + while new, 9378:5178 pencil while
-            // edited, 9378:6116 number, 9378:6440 outcome), so the glyph and fill change in place
-            // instead of one marker leaving and another arriving
-            ForEach(pinMarkers(saved: saved, sent: sent)) { marker in
-                PinBadge(number: marker.number, face: marker.face) {
-                    switch marker.face {
-                    case .saved: controller.openExisting(marker.id)
-                    case .sent: controller.openNotes()
-                    case .drafting: break
-                    }
+                ForEach(saved + sent) { annotation in
+                    PinMarker(
+                        annotation: annotation,
+                        strokes: annotation.sketchInScreenPoints,
+                        bounds: bounds
+                    )
+                    // Saving swaps the open draft's marker for this one; a fade-in here blinked the
+                    // strokes out for a frame. Badges still animate
+                    .transition(.identity)
                 }
-                .badgePlaced(at: OverlayPlacement.pinCenter(
-                    for: marker.anchor,
-                    radius: AnnotateStyle.badgeSize / 2,
-                    in: bounds
-                ))
-                .transition(Self.badgeAppearance)
+
+                if let draft = controller.draft {
+                    PinMarker(annotation: draft.annotation, strokes: draft.strokes, bounds: bounds)
+                }
+
+                LiveStrokeLayer(controller: controller, size: bounds.size)
+
+                // One marker per pin, keyed by the pin: saving the open pin, reopening a saved one and
+                // sending only change its face (Figma 9378:5659 + while new, 9378:5178 pencil while
+                // edited, 9378:6116 number, 9378:6440 outcome), so the glyph and fill change in place
+                // instead of one marker leaving and another arriving
+                ForEach(pinMarkers(saved: saved, sent: sent)) { marker in
+                    PinBadge(number: marker.number, face: marker.face) {
+                        switch marker.face {
+                        case .saved: controller.openExisting(marker.id)
+                        case .sent: controller.openNotes()
+                        case .drafting: break
+                        }
+                    }
+                    .badgePlaced(at: OverlayPlacement.pinCenter(
+                        for: marker.anchor,
+                        radius: AnnotateStyle.badgeSize / 2,
+                        in: bounds
+                    ))
+                    .transition(Self.badgeAppearance)
+                }
             }
         }
         // Screen-sized whatever a layer does: a layer wider than the screen made the window
@@ -319,6 +341,12 @@ private struct ActiveOverlay: View {
         .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
         .animation(.snappy(duration: 0.2), value: controller.annotations)
         .animation(.snappy(duration: 0.2), value: sent.map(\.id))
+        .onAppear {
+            withAnimation(.easeInOut(duration: UX.glowEntranceDuration)) {
+                isGlowRevealed = true
+            }
+        }
+        .onDisappear { isGlowRevealed = false }
     }
 
     /// One pin's marker: the pin's id, its number, what it shows and where it attaches.
@@ -374,18 +402,11 @@ private struct ActiveOverlay: View {
     /// Blue frost behind the bottom chrome (Figma 9272:16849 composing / 9272:17105 review): full
     /// screen width, from the chrome stack's top (card, or hint line) down past the keyboard / home
     /// indicator to the screen's bottom edge. Until the chrome is measured it starts where the review
-    /// bar's hint line sits, so it fades in with everything else instead of popping in a frame later.
+    /// bar's hint line sits, sharing the edge glow's fade instead of popping in a frame later.
     private var bottomFrost: some View {
         let bounds = controller.bounds
         let top = chromeTop ?? estimatedChromeTop
-        return ZStack {
-            if controller.isAgentWorking {
-                BottomFrost(palette: .working).transition(.opacity)
-            } else {
-                BottomFrost(palette: .idle).transition(.opacity)
-            }
-        }
-        .animation(Self.paletteChange, value: controller.isAgentWorking)
+        return BottomFrost(palette: .idle)
             .frame(width: bounds.width, height: max(bounds.maxY - top, 0))
             .offset(y: top)
             // Decoration only: drawing on the frozen screen behind it must keep working
@@ -404,7 +425,7 @@ private struct ActiveOverlay: View {
 /// The whole thing fades to clear toward its top, as Figma's does. Drawn and moved by Core Animation
 /// (`FluidFrostView`), so it costs the app nothing per frame.
 private struct BottomFrost: View {
-    /// Blue normally, green while Claude works.
+    /// The active annotation blue palette.
     let palette: GlowPalette
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -440,15 +461,12 @@ private struct BottomFrost: View {
     }
 }
 
-/// The one color the edge glow and the frost are mixed from, varied by opacity only: Accents/Blue
-/// normally, the indicators' green while Claude works (owner request 2026-11-01: opacities, not
-/// cyan/indigo or mint/teal hues).
+/// The annotation blue shared by the edge glow and frost, varied by opacity rather than hue.
 @MainActor
 struct GlowPalette {
     let color: UIColor
 
     static let idle = GlowPalette(color: UIColor(AnnotateStyle.action))
-    static let working = GlowPalette(color: UIColor(ReviewHintLine.connectedColor))
 }
 
 private extension View {
@@ -655,7 +673,7 @@ private struct SelectionCorners: Shape {
 /// inset-shadow bitmap (`EdgeBandMask`). The bands never change; only the light behind them turns,
 /// on Core Animation (`FluidRingsView`). Reduce Motion holds the light still.
 private struct ScreenGlow: View {
-    /// Blue normally, green while Claude works.
+    /// The active annotation blue palette.
     let palette: GlowPalette
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

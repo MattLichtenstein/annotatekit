@@ -33,17 +33,19 @@ public enum PromptRenderer {
         completion: String? = nil,
         detail: PromptDetail = .standard
     ) -> String {
-        let base = sessionPath.map { $0.hasSuffix("/") ? $0 : $0 + "/" } ?? ""
+        let isT3Owned = session.t3Route?.delivery == "t3-owned-bundle-v1"
+        let artifactPath = isT3Owned ? nil : sessionPath
+        let base = artifactPath.map { $0.hasSuffix("/") ? $0 : $0 + "/" } ?? ""
         var lines: [String] = []
 
         let pins = session.annotations.count
         let screens = session.screens.filter { !session.annotations(on: $0).isEmpty }
         lines.append(
             "UI annotations from the running app: \(pins) \(plural(pins, "pin")) on \(screens.count) \(plural(screens.count, "screen")). "
-                + "Please make these changes in the code."
+                + (isT3Owned ? "Address Fix notes in the code and answer Question notes." : "Please make these changes in the code.")
         )
         lines.append("")
-        lines.append("Session: \(sessionPath ?? session.id)")
+        lines.append("Session: \(artifactPath ?? session.id)")
         lines.append("Device: \(deviceLine(session))")
         if let framework = frameworkLine(session.app.framework) {
             lines.append(framework)
@@ -77,7 +79,7 @@ public enum PromptRenderer {
         }
 
         lines.append("")
-        lines.append(reportingParagraph(id: session.id))
+        lines.append(isT3Owned ? "Reply in the T3 conversation. Fix notes request code changes; Question notes request explanations. Local feedback files are cleared after delivery." : reportingParagraph(id: session.id))
         lines.append("")
         lines.append("Full detail (all frames, visible text per screen, sketch vectors): \(base)session.json")
         if let completion, !completion.isEmpty {

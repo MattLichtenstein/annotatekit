@@ -1,4 +1,4 @@
-// Bottom chrome the idle launcher pill keeps clear of, read from the app's own UIKit views: visible
+// Host chrome used for review-toolbar docking above tab bars and idle-launcher avoidance: visible
 // tab bars, toolbars, text inputs and controls that sit outside any scroll view (content scrolls
 // under the pill and would make it chase the scroll; chrome stays put), the extra bottom safe area a
 // container reserves for its bars, and views marked `.annotateAvoid()` (SwiftUI-drawn bars aren't
@@ -10,10 +10,23 @@
 import UIKit
 
 @MainActor
+/// Reads host-app chrome without accessibility scans or changing the app's view hierarchy.
 enum LauncherObstacles {
     /// Extra bottom safe area below which a container's reserve isn't treated as a bar: anything
     /// smaller is a rounding difference, not chrome.
     private static let minimumReserve: CGFloat = 20
+
+    /// The visible native tab bar's top in overlay points. Review captures it once per layout,
+    /// keeping the controls above the tabs without chasing their scrolling or glass animations.
+    static func tabBarTop(overlay: UIWindow) -> CGFloat? {
+        var frames: [CGRect] = []
+        for window in ElementScanner.appWindows(excluding: overlay) where window.windowLevel == .normal {
+            let top = topPresented(in: window)
+            let root: UIView = (top === window.rootViewController ? nil : top?.viewIfLoaded) ?? window
+            collect(in: root, overlay: overlay, onlyTabBars: true, into: &frames)
+        }
+        return frames.filter { $0.intersects(overlay.bounds) }.map(\.minY).min()
+    }
 
     /// Frames of the app's bottom chrome that reach into `band`, in `overlay`'s coordinates.
     static func scan(band: CGRect, overlay: UIWindow) -> [CGRect] {
@@ -32,16 +45,18 @@ enum LauncherObstacles {
         return found.filter { $0.intersects(band) }
     }
 
-    private static func collect(in view: UIView, overlay: UIWindow, into found: inout [CGRect]) {
+    private static func collect(
+        in view: UIView, overlay: UIWindow, onlyTabBars: Bool = false, into found: inout [CGRect]
+    ) {
         guard !view.isHidden, view.alpha > 0.01 else { return }
-        if isChrome(view) {
+        if onlyTabBars ? view is UITabBar : isChrome(view) {
             // A tab bar's buttons are part of it; one frame covers them
             found.append(view.convert(view.bounds, to: overlay))
             return
         }
         if view is UIScrollView { return }
         for subview in view.subviews {
-            collect(in: subview, overlay: overlay, into: &found)
+            collect(in: subview, overlay: overlay, onlyTabBars: onlyTabBars, into: &found)
         }
     }
 

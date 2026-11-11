@@ -23,6 +23,8 @@ public struct AnnotationSession: Codable, Sendable, Equatable {
     /// One entry per freeze-frame captured while annotating (entering annotate mode captures one).
     public var screens: [Screen]
     public var annotations: [Annotation]
+    /// Optional routing capability. Routed bundles use a separate inbox from legacy consumers.
+    public var t3Route: T3Route?
 
     public init(
         id: String,
@@ -30,7 +32,8 @@ public struct AnnotationSession: Codable, Sendable, Equatable {
         app: AppInfo,
         device: DeviceInfo,
         screens: [Screen],
-        annotations: [Annotation]
+        annotations: [Annotation],
+        t3Route: T3Route? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
@@ -39,6 +42,7 @@ public struct AnnotationSession: Codable, Sendable, Equatable {
         self.device = device
         self.screens = screens
         self.annotations = annotations
+        self.t3Route = t3Route
     }
 
     public func annotations(on screen: Screen) -> [Annotation] {
