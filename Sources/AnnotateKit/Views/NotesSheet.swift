@@ -2,7 +2,8 @@
 // small detent and drags up to full height, with tags in a bar under its toolbar that pick what it lists:
 // Current (pins waiting to be sent), In Progress, Resolved and Failed (the last Send's pins, sorted by
 // `NoteFilter`, from the last Send and every earlier one of the last 48 hours, grouped by Send),
-// each with its count. Current rows open on the comment card with a tap (pins on another
+// T3 mode instead lists Current, Sending, Sent, and Failed for this app session.
+// Each has its count. Current rows open on the comment card with a tap (pins on another
 // screen can't open here, so they only list) and delete with a swipe (a trash icon, no label); Clear
 // All (a trash icon) clears them after an alert asks. Sent rows show the same spinner / glyph / number as their badges and
 // the pin's conversation with the agent, with Reply on a question of the last Send. A tag with nothing in it shows an
@@ -15,6 +16,7 @@ import AnnotateCore
 #endif
 import SwiftUI
 
+/// Lists drafts and agent outcomes, or delivery-only T3 notes retained for the app session.
 struct NotesSheet: View {
     let controller: AnnotateController
 
@@ -40,14 +42,16 @@ struct NotesSheet: View {
     static let emptyIconSize: CGFloat = 48
     static let tagChange: Animation = .snappy(duration: 0.2)
 
+    private var filters: [NoteFilter] { NoteFilter.filters(isT3Connected: controller.isT3Connected) }
+
     var body: some View {
         let pending = PinResult.results(for: controller.annotations, statuses: [])
         // The last Send first, then earlier ones newest first, each in pin order. Grouping keeps that
         // order inside every tag. Only the last Send has a live delivery stage
         let sent = Dictionary(grouping: sentNotes) {
-            NoteFilter.of($0.result.outcome, delivery: $0.stage)
+            $0.t3Filter ?? NoteFilter.of($0.result.outcome, delivery: $0.stage)
         }
-        let counts = Dictionary(uniqueKeysWithValues: NoteFilter.allCases.map { filter in
+        let counts = Dictionary(uniqueKeysWithValues: filters.map { filter in
             (filter, filter == .current ? pending.count : sent[filter]?.count ?? 0)
         })
         let filter = pickedFilter ?? NoteFilter.initial(counts: counts)
@@ -75,7 +79,9 @@ struct NotesSheet: View {
                             }
                         } header: {
                             // No Figma (derived): "Sent 2 hours ago"
-                            Text("Sent \(send.sentAt.formatted(.relative(presentation: .named)))")
+                            Text(controller.isT3Connected
+                                 ? send.sentAt.formatted(.relative(presentation: .named))
+                                 : "Sent \(send.sentAt.formatted(.relative(presentation: .named)))")
                         }
                     }
                 }
@@ -148,7 +154,7 @@ struct NotesSheet: View {
     private func tags(selected: NoteFilter, counts: [NoteFilter: Int]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Self.tagSpacing) {
-                ForEach(NoteFilter.allCases, id: \.self) { filter in
+                ForEach(filters, id: \.self) { filter in
                     NoteTag(filter: filter, count: counts[filter] ?? 0, isSelected: filter == selected) {
                         withAnimation(Self.tagChange) { pickedFilter = filter }
                     }
@@ -165,7 +171,8 @@ struct NotesSheet: View {
         switch filter {
         // One speech-bubble family, and the system spinner glyph for work under way
         case .current: "text.bubble"
-        case .inProgress: "progress.indicator"
+        case .inProgress, .sending: "progress.indicator"
+        case .sent: "paperplane"
         case .resolved: "checkmark.bubble"
         case .failed: "exclamationmark.bubble"
         }
@@ -216,7 +223,13 @@ struct NotesSheet: View {
     private func sentRow(_ note: SentNote) -> some View {
         let result = note.result
         let outcome = result.outcome
-        let mark = SentPinMark.resolve(
+        let mark: SentPinMark = note.t3Filter.map { filter in
+            switch filter {
+            case .sent: .symbol("paperplane.fill", .neutral)
+            case .failed: .symbol("exclamationmark", .attention)
+            default: .progress
+            }
+        } ?? SentPinMark.resolve(
             outcome: outcome,
             delivery: note.isLatest ? controller.delivery : nil,
             acknowledgesPins: note.isLatest && !controller.acknowledgedPins.isEmpty
@@ -227,7 +240,7 @@ struct NotesSheet: View {
             HStack(spacing: Self.rowSpacing) {
                 NoteBadge(number: result.index, mark: mark)
                 VStack(alignment: .leading, spacing: Self.textSpacing) {
-                    Text(outcome.label + (outcome.detail.map { " · \($0)" } ?? ""))
+                    Text(note.t3Filter?.title ?? (outcome.label + (outcome.detail.map { " · \($0)" } ?? "")))
                         .font(.body)
                         .foregroundStyle(.primary)
                         .lineLimit(3)
@@ -263,6 +276,14 @@ struct NotesSheet: View {
 
     /// The last Send's notes, then every earlier Send's of the last 48 hours, newest first.
     private var sentNotes: [SentNote] {
+        if controller.isT3Connected {
+            return controller.t3NoteHistory.batches.flatMap { batch in
+                batch.notes.map {
+                    SentNote(sessionID: batch.id, sentAt: batch.sentAt, result: $0,
+                             stage: nil, isLatest: false, t3Filter: batch.filter)
+                }
+            }
+        }
         let latest = controller.lastSend.map { send in
             controller.pinResults.map {
                 SentNote(sessionID: send.sessionID, sentAt: send.sentAt, result: $0,
@@ -305,6 +326,7 @@ private struct SentNote: Identifiable {
     let stage: DeliveryStage?
     /// The last Send: its delivery stage is live and its questions can be answered here.
     let isLatest: Bool
+    var t3Filter: NoteFilter? = nil
 
     var id: String { "\(sessionID)#\(result.index)" }
 }

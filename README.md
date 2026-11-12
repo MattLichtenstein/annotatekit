@@ -66,10 +66,14 @@ conversation/attachment copies according to its lifecycle. Agents reply in T3.
 Generic prompts distinguish Fix changes from Question explanations and use portable
 artifact paths inside the attached ZIP.
 
-Offline batches reach the Mac over the paired developer connection. “Queued in thread”
+Offline batches reach the Mac over the paired developer connection. “Sent”
 means delivered, not agent completion. This confirmation lasts six seconds and clears
 on closing the overlay; completed receipts are not replayed on reopen or launch.
-Pending Sends still resume delivery tracking. A missing cleanup option keeps legacy
+In T3 mode the notes list uses Current, Sending, Sent, and Failed. Confirmed notes
+remain in Sent as text-only, in-memory history until the app exits, including after
+closing and reopening the overlay. Screenshot files are still cleared on delivery;
+completed note history is never restored on relaunch. Pending Sends still resume
+delivery tracking. A missing cleanup option keeps legacy
 reference-only delivery: messages reference absolute Mac bundle paths, so those files
 must remain until explicit cleanup. New and legacy sessions remain schema 1 through
 optional routing, catalog-capability, and receipt fields. Routed batches are excluded

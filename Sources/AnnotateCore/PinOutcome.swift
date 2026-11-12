@@ -234,6 +234,10 @@ public enum NoteFilter: String, CaseIterable, Sendable {
     case current
     /// Sent and still with the agent: waiting, being worked on, asked about, or answered.
     case inProgress
+    /// Waiting for a T3 receipt.
+    case sending
+    /// T3 confirmed delivery, independently of agent work.
+    case sent
     /// The agent resolved it.
     case resolved
     /// The agent dismissed it, or its Send failed or couldn't be saved.
@@ -243,6 +247,8 @@ public enum NoteFilter: String, CaseIterable, Sendable {
         switch self {
         case .current: "Current"
         case .inProgress: "In Progress"
+        case .sending: "Sending"
+        case .sent: "Sent"
         case .resolved: "Resolved"
         case .failed: "Failed"
         }
@@ -253,9 +259,16 @@ public enum NoteFilter: String, CaseIterable, Sendable {
         switch self {
         case .current: OverlayChrome.emptyTitle
         case .inProgress: "Nothing in progress"
+        case .sending: "Nothing sending"
+        case .sent: "Nothing sent yet"
         case .resolved: "Nothing resolved yet"
         case .failed: "Nothing failed"
         }
+    }
+
+    /// T3 tracks delivery; other integrations retain their agent-work statuses.
+    public static func filters(isT3Connected: Bool) -> [NoteFilter] {
+        isT3Connected ? [.current, .sending, .sent, .failed] : [.current, .inProgress, .resolved, .failed]
     }
 
     /// Where a sent pin belongs. The agent's report decides first. A pin it never reported on follows

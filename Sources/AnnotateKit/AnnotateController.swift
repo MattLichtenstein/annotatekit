@@ -57,7 +57,7 @@ import UIKit
 
 @MainActor
 @Observable
-/// Coordinates annotation captures, note editing, and live scrolling without reassigning saved evidence.
+/// Coordinates captures, note editing, live scrolling, and session-only T3 delivery history.
 final class AnnotateController {
     struct Draft: Equatable {
         /// `index` is 0 until a new draft is saved.
@@ -107,6 +107,8 @@ final class AnnotateController {
         let results: [PinResult]
         /// Where the Send got to, from its status.json; nil when nobody picked it up.
         let stage: DeliveryStage?
+        let t3Route: T3Route?
+        let hasT3Receipt: Bool
 
         var id: String { sessionID }
     }
@@ -191,6 +193,9 @@ final class AnnotateController {
     @ObservationIgnored private var acknowledgedT3SessionID: String?
     @ObservationIgnored private var t3ConfirmationHold: Task<Void, Never>?
     private var sentT3Route: T3Route?
+    /// Delivery details survive closing the overlay, but never an app restart.
+    private(set) var t3NoteHistory = T3NoteHistory()
+    var isT3Connected: Bool { options.t3ProjectID != nil }
 
     func openThreadPicker() {
         guard options.t3ProjectID != nil, chrome.canSend else { return }
@@ -935,12 +940,17 @@ final class AnnotateController {
                                 statuses: statuses,
                                 acknowledged: status?.acknowledged ?? []
                             ),
-                            stage: status.map { DeliveryStage.resolve(status: $0, pins: statuses) }
+                            stage: status.map { DeliveryStage.resolve(status: $0, pins: statuses) },
+                            t3Route: session.t3Route,
+                            hasT3Receipt: T3DeliveryFiles.read(id: id, in: output) != nil
                         )
                     }
             }.value
-            guard let self, self.history != past else { return }
-            self.history = past
+            guard let self else { return }
+            for send in past where send.t3Route?.projectID == self.options.t3ProjectID && send.t3Route != nil && !send.hasT3Receipt {
+                self.t3NoteHistory.record(id: send.sessionID, sentAt: send.sentAt, notes: send.results)
+            }
+            if self.history != past { self.history = past }
         }
     }
 
@@ -1097,6 +1107,10 @@ final class AnnotateController {
 
         // These pins are the ones the agent will report on; the previous Send's results are gone
         lastSend = SentBatch(sessionID: job.sessionID, output: job.outputDirectory, pins: outgoing, sentAt: Date())
+        if route != nil, let send = lastSend {
+            t3NoteHistory.record(id: send.sessionID, sentAt: send.sentAt,
+                                 notes: PinResult.results(for: outgoing, statuses: []))
+        }
         // The Send this replaces is history now
         refreshHistory()
         localReplies.removeAll()
@@ -1149,6 +1163,7 @@ final class AnnotateController {
                 UIPasteboard.general.string = outcome.prompt
             }
             if outcome.error != nil, route != nil {
+                self.t3NoteHistory.fail(id: job.sessionID)
                 // Routed feedback has a durable retry workflow; keep the actual notes and captures.
                 self.annotations.insert(contentsOf: outgoing, at: 0)
                 for index in self.annotations.indices { self.annotations[index].index = index + 1 }
@@ -1802,13 +1817,14 @@ final class AnnotateController {
                     }.value
                     guard !Task.isCancelled else { return }
                     if let receipt, receipt.version == 1, receipt.sessionID == id {
+                        self.t3NoteHistory.acknowledge(receipt)
                         self.showT3Confirmation(id: id)
                         if self.selectedT3Route?.conversationID == route.conversationID {
                             self.selectedT3Route?.threadID = receipt.threadID
                             self.selectedThreadTitle = receipt.title
                         }
                         if receipt.contentStoredInT3 == true, route.delivery == T3DeliveryFiles.ownedDelivery {
-                            await Task.detached(priority: .utility) {
+                            _ = await Task.detached(priority: .utility) {
                                 T3DeliveryFiles.clearAcknowledgedContent(in: output)
                             }.value
                             guard !Task.isCancelled else { return }
@@ -1890,7 +1906,11 @@ final class AnnotateController {
             self.updateReportedStatuses(resumable.pins, acknowledged: resumable.acknowledged)
             self.deliveryStartedAt = session.createdAt
             self.sentT3Route = session.t3Route
-            if session.t3Route != nil { self.t3DeliveryText = "Waiting for Mac" }
+            if session.t3Route != nil {
+                self.t3NoteHistory.record(id: session.id, sentAt: session.createdAt,
+                                          notes: PinResult.results(for: session.annotations, statuses: []))
+                self.t3DeliveryText = "Waiting for Mac"
+            }
             // A resumed Send was written before the relaunch
             self.notesWritten = session.annotations.count
             self.trackDelivery(id: session.id, in: output)
@@ -1907,7 +1927,7 @@ final class AnnotateController {
             deliveryStartedAt = nil
         }
         guard isActive else { t3DeliveryText = nil; return }
-        t3DeliveryText = "Queued in thread"
+        t3DeliveryText = "Sent"
         t3ConfirmationHold = Task { [weak self] in
             try? await Task.sleep(for: .seconds(LauncherStatus.finalHold))
             guard let self, !Task.isCancelled, self.acknowledgedT3SessionID == id else { return }
@@ -1957,6 +1977,11 @@ final class AnnotateController {
                 }.value
                 guard let self, !Task.isCancelled else { return }
                 if let projectID = self.options.t3ProjectID {
+                    let pendingIDs = self.t3NoteHistory.batches.filter { $0.filter == .sending }.map(\.id)
+                    let receipts = await Task.detached(priority: .utility) {
+                        pendingIDs.compactMap { T3DeliveryFiles.read(id: $0, in: output) }
+                    }.value
+                    for receipt in receipts { self.t3NoteHistory.acknowledge(receipt) }
                     let catalog = await Task.detached(priority: .utility) {
                         let url = output.appendingPathComponent(T3ThreadCatalog.fileName)
                         guard let data = try? Data(contentsOf: url) else { return Optional<T3ThreadCatalog>.none }
