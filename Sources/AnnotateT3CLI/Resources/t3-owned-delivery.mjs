@@ -14,8 +14,32 @@ async function rejectLinks(directory) {
   }
 }
 
+async function optionalJSON(path) {
+  try { return JSON.parse(await readFile(path, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+
 export async function clearOwnedBatch(root, id) {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw Error('Invalid batch ID');
+  const state = await optionalJSON(join(root, '.routing', `batch-${id}.json`));
+  const session = await optionalJSON(join(root, 'sessions', id, 'session.json'));
+  const conversationID = session?.t3Route?.conversationID ?? state?.conversationID;
+  if (/^[0-9a-f-]{36}$/i.test(conversationID ?? '')) {
+    const path = join(root, '.routing', `conversation-${conversationID}.json`);
+    const conversation = await optionalJSON(path);
+    if (conversation?.launchBatchID === id && conversation.launchArguments) {
+      // Initial-message launches temporarily persist notes for exact retries; never retain them
+      // in the otherwise content-free conversation mapping after T3 owns the batch.
+      const { message, attachments, ...launchArguments } = conversation.launchArguments;
+      await privateJSON(path, { ...conversation, launchArguments });
+      // Also remove full-message atomic-write remnants left by a killed helper process.
+      for (const name of await readdir(join(root, '.routing'))) {
+        if (name.startsWith(`conversation-${conversationID}.json.`) && name.endsWith('.tmp')) {
+          await rm(join(root, '.routing', name), { force: true });
+        }
+      }
+    }
+  }
   await rm(join(root, 'sessions', id), { recursive: true, force: true });
   await rm(join(root, '.routing', `batch-${id}.zip`), { force: true });
   await rm(join(root, '.routing', `batch-${id}.json`), { force: true });
@@ -28,7 +52,7 @@ export async function clearOwnedBatch(root, id) {
   }
 }
 
-export async function deliverOwnedBatch({ root, session, directory, threadID, thread, client, state, statePath }, {
+export async function prepareOwnedBatch({ root, session, directory, client, state, statePath }, {
   fetcher = fetch,
   archive = (source, target) => execFileSync('/usr/bin/ditto', ['-c', '-k', '--norsrc', source, target], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000 })
 } = {}) {
@@ -55,7 +79,6 @@ export async function deliverOwnedBatch({ root, session, directory, threadID, th
     state.attachments[index] = { id: prepared.attachmentId, type: file.type, name: file.name, mimeType: file.mimeType, sizeBytes: bytes.length };
     await privateJSON(statePath, state);
   }
-  const hash = createHash('sha256').update(`${session.t3Route.projectID}:${session.t3Route.conversationID}:${session.id}`).digest('hex');
   const prompt = await readFile(join(directory, 'prompt.md'), 'utf8');
   const message = `AnnotateKit feedback batch ${session.id}\n\nThe attached ZIP contains session.json, prompt.md, all original screenshots, crops, and chosen references. ` +
     `Extract it and open the annotated screens first. Artifact paths in prompt.md are relative to the extracted bundle. ` +
@@ -63,15 +86,26 @@ export async function deliverOwnedBatch({ root, session, directory, threadID, th
     `if they point to another checkout, locate the corresponding app files in this thread's checkout. ` +
     `AnnotateKit deletes its phone/Mac content after T3 accepts this message, so use the T3 attachments for all feedback. ` +
     `Respond in this T3 thread; device status/reply files are no longer available.\n\n${prompt}`;
-  const result = await client.call('orchestration.dispatchCommand', {
-    type: 'message.dispatch', createdBy: 'user', creationSource: 'mobile',
-    commandId: `annotatekit:${hash}`, messageId: `annotatekit-message:${hash}`, threadId: threadID,
-    text: message, attachments: state.attachments, dispatchMode: { type: 'queue_after_active' }
-  });
-  if (!Number.isSafeInteger(result.sequence) || result.sequence < 0) throw Error('T3 did not acknowledge the feedback');
-  // The receipt is durable before any content is deleted. It contains routing metadata only.
+  return { message, attachments: state.attachments };
+}
+
+// The caller must have a durable queued-message or initial-message launch acknowledgement.
+export async function acknowledgeOwnedBatch({ root, session, threadID, thread }) {
   const receipt = { version: 1, sessionID: session.id, threadID, title: thread.title ?? 'App feedback', link: thread.link ?? '', contentStoredInT3: true };
   await privateJSON(join(root, 'deliveries', `${session.id}.json`), receipt);
   await clearOwnedBatch(root, session.id);
   return receipt;
+}
+
+export async function deliverOwnedBatch(input, dependencies) {
+  const { root, session, threadID, thread, client } = input;
+  const { message, attachments } = await prepareOwnedBatch(input, dependencies);
+  const hash = createHash('sha256').update(`${session.t3Route.projectID}:${session.t3Route.conversationID}:${session.id}`).digest('hex');
+  const result = await client.call('orchestration.dispatchCommand', {
+    type: 'message.dispatch', createdBy: 'user', creationSource: 'mobile',
+    commandId: `annotatekit:${hash}`, messageId: `annotatekit-message:${hash}`, threadId: threadID,
+    text: message, attachments, dispatchMode: { type: 'queue_after_active' }
+  });
+  if (!Number.isSafeInteger(result.sequence) || result.sequence < 0) throw Error('T3 did not acknowledge the feedback');
+  return acknowledgeOwnedBatch({ root, session, threadID, thread });
 }

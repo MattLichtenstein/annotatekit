@@ -49,7 +49,17 @@ not agent success. Existing status.json states are unchanged. `.routing/` contai
 Mac-only conversation/grant IDs, complete pending launch arguments (including the
 resolved workspace strategy), and pending batch attachment IDs/temporary ZIPs.
 New conversations resolve the effective T3 workspace setting once and persist it
-before launch. Older interrupted launch records retain their original root request.
+before launch. New launches include the first batch as an opening message with its
+uploaded attachments, allowing T3's native branch generator to apply effective
+branch-naming settings to the real feedback. Launch records temporarily contain that
+message and attachment descriptors for exact retries. A matching initial-message
+acknowledgement is delivery, so the batch is not queued a second time. The accepted
+run/batch IDs persist before local receipt creation; a receipt-write retry only
+finishes cleanup. Owned cleanup scrubs message/attachment fields from the mapping
+and removes matching interrupted atomic-write temporary files before deleting batch
+content. Existing destinations keep their branch and receive queued messages.
+Older interrupted launch records retain their original request without adding a
+new opening message or changing their binding.
 Credentials live outside the inbox entirely. Minimal receipts and conversation
 mappings remain after owned content cleanup. Never give this inbox to a legacy
 consumer. All routed sessions survive automatic pruning pending confirmed delivery

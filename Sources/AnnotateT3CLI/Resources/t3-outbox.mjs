@@ -2,7 +2,7 @@
 import { readFile, readdir, realpath, lstat } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { callTool, privateJSON } from './t3-bridge.mjs';
-import { clearOwnedBatch, deliverOwnedBatch } from './t3-owned-delivery.mjs';
+import { clearOwnedBatch, deliverOwnedBatch, prepareOwnedBatch, acknowledgeOwnedBatch } from './t3-owned-delivery.mjs';
 import { newThreadWorkspace } from './t3-workspace.mjs';
 
 async function readJSON(path) {
@@ -15,7 +15,7 @@ function resultOK(result) {
   return result;
 }
 
-export async function tick(root, projectID, credential, call = (name, args) => callTool(credential, name, args), { deliveryClient, makeDeliveryClient, deliver = deliverOwnedBatch } = {}) {
+export async function tick(root, projectID, credential, call = (name, args) => callTool(credential, name, args), { deliveryClient, makeDeliveryClient, deliver = deliverOwnedBatch, prepare = prepareOwnedBatch, acknowledge = acknowledgeOwnedBatch } = {}) {
   const tools = await call('tools/list', {});
   for (const name of ['t3_thread_launch', 't3_thread_send']) {
     if (!tools.tools.find(tool => tool.name === name)?.inputSchema?.properties?.clientRequestId) {
@@ -61,15 +61,33 @@ export async function tick(root, projectID, credential, call = (name, args) => c
     let threadID = route.threadID ?? conversation?.threadID;
     const appName = Array.from(session.app?.name?.trim() || 'App').slice(0, 50).join('');
     const defaultTitle = `${appName} feedback`;
+    const isOwned = route.delivery === 't3-owned-bundle-v1';
+    const legacyMessage = async () => {
+      const prompt = await readFile(join(directory, 'prompt.md'), 'utf8');
+      return `AnnotateKit feedback batch ${session.id}\n\n` +
+        `Complete local bundle: ${resolved}\nRead session.json, prompt.md, and the referenced images from this absolute directory. ` +
+        `They are available on this Mac even when this thread uses a different checkout. ` +
+        `Follow the completion instructions below. Source locations identify the app checkout. ` +
+        `Delivery is queued; it does not authorize changes beyond those instructions.\n\n${prompt}`;
+    };
     if (!threadID) {
       if (conversation && conversation.grantID !== credential.grantID) throw Error('New sign-in requires reconciling an interrupted thread creation');
       if (!conversation) {
-        if (!tools.tools.find(tool => tool.name === 't3_thread_launch')?.inputSchema?.properties?.workspaceStrategy) {
+        const properties = tools.tools.find(tool => tool.name === 't3_thread_launch')?.inputSchema?.properties;
+        if (!properties?.workspaceStrategy || !properties?.message || (isOwned && !properties?.attachments)) {
           throw Error('This T3 version cannot bind annotation threads to the configured checkout');
         }
         const workspaceStrategy = await newThreadWorkspace(projectID, call, deliveryClient);
-        conversation = { projectID, grantID: credential.grantID, launchArguments: {
-          projectId: projectID, title: defaultTitle, workspaceStrategy,
+        let payload;
+        if (isOwned) {
+          const state = await readJSON(attemptPath) ?? { grantID: credential.grantID, conversationID: route.conversationID };
+          if (state.grantID !== credential.grantID) throw Error('New sign-in requires reconciling interrupted uploads');
+          state.conversationID = route.conversationID;
+          payload = await prepare({ root, session, directory, client: deliveryClient, state, statePath: attemptPath });
+        } else { payload = { message: await legacyMessage(), attachments: [] }; }
+        // Initial feedback gives T3's native branch generator the real task and attachments.
+        conversation = { projectID, grantID: credential.grantID, launchBatchID: session.id, launchArguments: {
+          projectId: projectID, title: defaultTitle, workspaceStrategy, ...payload,
           clientRequestId: `annotatekit-conversation-${route.conversationID}`
         } };
       }
@@ -83,30 +101,37 @@ export async function tick(root, projectID, credential, call = (name, args) => c
       await privateJSON(conversationPath, conversation);
       const launched = resultOK(await call('t3_thread_launch', conversation.launchArguments));
       if (launched.projectId !== projectID || !launched.threadId) throw Error('Unexpected new thread');
+      const hasInitialMessage = typeof conversation.launchArguments.message === 'string';
+      if (hasInitialMessage && (typeof launched.runId !== 'string' || !launched.runId)) {
+        throw Error('T3 did not acknowledge the initial feedback; batch retained');
+      }
       threadID = launched.threadId;
-      await privateJSON(conversationPath, { ...conversation, threadID });
+      conversation = { ...conversation, threadID,
+        ...(hasInitialMessage ? { initialDelivery: { sessionID: conversation.launchBatchID, runID: launched.runId } } : {}) };
+      await privateJSON(conversationPath, conversation);
     }
     // Recheck an existing destination rather than trusting a stale device catalog.
     const target = resultOK(await call('t3_thread_read', { threadId: threadID, limit: 1 }));
     const thread = target.thread ?? target;
     if (thread.projectId !== projectID) throw Error('Destination is outside the configured project');
+    if (conversation?.initialDelivery?.sessionID === session.id) {
+      if (isOwned) await acknowledge({ root, session, threadID, thread });
+      else await privateJSON(join(directory, 't3-delivery.json'), { version: 1, sessionID: session.id, threadID,
+        title: thread.title ?? defaultTitle, link: thread.link ?? '' });
+      continue; // The opening message already delivered this batch; do not enqueue it again.
+    }
     const attempt = await readJSON(attemptPath);
-    if (attempt && (attempt.grantID !== credential.grantID || attempt.threadID !== threadID)) {
+    if (attempt && (attempt.grantID !== credential.grantID || (attempt.threadID != null && attempt.threadID !== threadID))) {
       throw Error('New sign-in requires reconciling an interrupted batch');
     }
-    const state = attempt ?? { grantID: credential.grantID, threadID };
+    const state = { ...attempt, grantID: credential.grantID, threadID, conversationID: route.conversationID };
     await privateJSON(attemptPath, state);
-    if (route.delivery === 't3-owned-bundle-v1') {
+    if (isOwned) {
       if (!deliveryClient) throw Error('T3 attachment delivery is unavailable; feedback retained');
       await deliver({ root, session, directory, threadID, thread, client: deliveryClient, state, statePath: attemptPath });
       continue;
     }
-    const prompt = await readFile(join(directory, 'prompt.md'), 'utf8');
-    const message = `AnnotateKit feedback batch ${session.id}\n\n` +
-      `Complete local bundle: ${resolved}\nRead session.json, prompt.md, and the referenced images from this absolute directory. ` +
-      `They are available on this Mac even when this thread uses a different checkout. ` +
-      `Follow the completion instructions below. Source locations identify the app checkout. ` +
-      `Delivery is queued; it does not authorize changes beyond those instructions.\n\n${prompt}`;
+    const message = await legacyMessage();
     const sent = resultOK(await call('t3_thread_send', { threadId: threadID, mode: 'queue', message,
       clientRequestId: `annotatekit-batch-${session.id}` }));
     if (sent.threadId !== threadID || !['queued', 'started'].includes(sent.delivery)) throw Error('T3 did not acknowledge queued delivery');

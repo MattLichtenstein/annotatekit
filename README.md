@@ -34,6 +34,12 @@ create a second thread or change its workspace. If settings cannot be read, the
 batch remains pending rather than silently using the project root. Pre-upgrade
 interrupted launches preserve their original request and implicit root binding.
 
+The first batch is the new thread's opening message, including its uploaded
+attachments. This lets T3 generate the checkout branch from the real feedback using
+its configured naming mode, prefix, and instructions. T3 may briefly show a temporary
+name while generating it. Existing destination branches are unchanged. Opening
+messages are not queued again; accepted run IDs make receipt-write retries safe.
+
 Run this fork's separate Mac receiver (Node 22+ and Xcode required):
 
 ```sh
@@ -56,13 +62,15 @@ token after OAuth authorization is checked. T3 Code itself is unchanged; no fork
 required. The ZIP limit is 50 MiB and each preview limit is 10 MiB. Missing capabilities,
 failed uploads, and ambiguous responses preserve the batch.
 
-Only after T3 durably accepts the queued message does the Mac write a content-free
+Only after T3 durably accepts the queued or opening message does the Mac write a content-free
 receipt and clear its bundle, archive, staging copies, and per-batch upload state.
 The phone processes the receipt while active; hosts can also call
 `await Annotate.clearDeliveredFeedback(in: outputDirectory)` on launch/foreground
 without installing the overlay. An active canvas remains until closed; unsent notes
 are preserved. Minimal receipts and routing IDs remain for retries. T3 keeps its own
 conversation/attachment copies according to its lifecycle. Agents reply in T3.
+Pending opening-message launch arguments temporarily contain feedback for exact
+retries; confirmed cleanup scrubs that content and matching atomic-write remnants.
 Generic prompts distinguish Fix changes from Question explanations and use portable
 artifact paths inside the attached ZIP.
 

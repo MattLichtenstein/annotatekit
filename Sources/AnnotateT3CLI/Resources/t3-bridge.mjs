@@ -1,7 +1,7 @@
 // Mac-only OAuth/MCP adapter. Credentials never enter session bundles or the device mirror.
 import { createServer } from 'node:http';
 import { randomBytes, createHash, randomUUID } from 'node:crypto';
-import { readFile, mkdir, writeFile, rename, chmod } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, rename, chmod, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -9,8 +9,10 @@ export async function privateJSON(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await chmod(dirname(path), 0o700);
   const temp = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temp, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
-  await rename(temp, path);
+  try {
+    await writeFile(temp, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+    await rename(temp, path);
+  } finally { await rm(temp, { force: true }); }
 }
 
 function safeOrigin(value) {

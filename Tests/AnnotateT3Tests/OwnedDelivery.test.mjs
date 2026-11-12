@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deliverOwnedBatch } from '../../Sources/AnnotateT3CLI/Resources/t3-owned-delivery.mjs';
+import { deliverOwnedBatch, acknowledgeOwnedBatch } from '../../Sources/AnnotateT3CLI/Resources/t3-owned-delivery.mjs';
 import { callRpc } from '../../Sources/AnnotateT3CLI/Resources/t3-rpc.mjs';
 
 async function fixture(fn) {
@@ -13,7 +13,7 @@ async function fixture(fn) {
   await mkdir(join(directory, 'screens'), { recursive: true });
   await writeFile(join(directory, 'prompt.md'), 'Move the synthetic button.');
   await writeFile(join(directory, 'screens/1.png'), 'synthetic-pixels');
-  const session = { id, t3Route: { projectID: 'koa', conversationID: 'fixed-conversation' }, screens: [{ annotatedImage: 'screens/1.png' }] };
+  const session = { id, t3Route: { projectID: 'koa', conversationID: 'b76fed10-a9d8-4e6d-887a-33f7f640a999' }, screens: [{ annotatedImage: 'screens/1.png' }] };
   await writeFile(join(directory, 'session.json'), JSON.stringify(session));
   const state = { grantID: 'stable-grant', threadID: 'thread' };
   const options = { root, directory, session, state, statePath: join(root, '.routing', `batch-${id}.json`), threadID: 'thread', thread: { title: 'App feedback' } };
@@ -105,3 +105,26 @@ test('RPC rejects a dropped connection without authorizing content deletion', as
     Socket: DroppedSocket, fetcher: async () => Response.json({ ticket: 'fake-ticket' })
   }), /disconnected/);
 });
+
+
+test('confirmed cleanup scrubs opening notes even when the shared session directory was already cleared', async () => fixture(async input => {
+  const conversationID = input.session.t3Route.conversationID;
+  input.state.conversationID = conversationID;
+  await writeFile(input.statePath, JSON.stringify(input.state));
+  const path = join(input.root, '.routing', `conversation-${conversationID}.json`);
+  await writeFile(path, JSON.stringify({ launchBatchID: input.session.id, threadID: 'thread',
+    launchArguments: { title: 'App feedback', message: 'Private feedback text', attachments: [{ id: 'attachment' }], workspaceStrategy: { type: 'worktree' } } }));
+  const temporary = `${path}.interrupted.tmp`;
+  const unrelated = join(input.root, '.routing', 'conversation-unrelated.json.interrupted.tmp');
+  await writeFile(temporary, 'Private feedback text');
+  await writeFile(unrelated, 'Unrelated pending feedback');
+  await rm(input.directory, { recursive: true });
+  await acknowledgeOwnedBatch(input);
+  const retained = JSON.parse(await readFile(path));
+  assert.equal(retained.launchArguments.message, undefined);
+  assert.equal(retained.launchArguments.attachments, undefined);
+  assert.equal(retained.launchArguments.workspaceStrategy.type, 'worktree');
+  await assert.rejects(readFile(temporary));
+  assert.equal(await readFile(unrelated, 'utf8'), 'Unrelated pending feedback');
+  await assert.rejects(readFile(input.statePath));
+}));
