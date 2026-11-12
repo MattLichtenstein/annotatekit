@@ -160,6 +160,10 @@ The app's iOS deployment target must be 17.0 or later (Expo: `ios.deploymentTarg
 ## Usage
 
 The review toolbar's **Drag mode** button switches between **Draw** and **Scroll**. It keeps one hand icon in a fixed material circle above the native tab bar; blue indicates Scroll.
+Each opening starts in Draw mode, including after closing with X and shaking to reopen.
+Scroll mode always shows the connection indicator or current delivery status above
+the toolbar, including before Send. Draw hides the line while delivery tracking continues.
+
 The screen-edge glow and bottom wash ease in together over 0.9 seconds at 75% intensity when review opens and keep animating while scrolling. Scroll mode has no instructional hint; delivery updates still appear.
 In Scroll mode, swipes scroll the real app while taps and holds still create annotations; tapping
 does not activate the app's buttons. A note freezes its current screen while you write, then saving

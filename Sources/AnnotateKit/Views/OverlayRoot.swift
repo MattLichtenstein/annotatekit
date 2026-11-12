@@ -29,7 +29,7 @@ import AnnotateCore
 #endif
 import SwiftUI
 
-/// Keeps review controls and synchronized glow layers over a frozen canvas or the live scrolling app.
+/// Keeps review controls and glow layers over the app, with delivery status only while scrolling.
 struct OverlayRoot: View {
     let controller: AnnotateController
 
@@ -160,8 +160,8 @@ private struct BottomChrome: View {
                     ReviewBar(controller: controller)
                         .padding(.horizontal, Self.screenInset)
 
-                    // Keep Send progress and agent questions visible while the app can scroll.
-                    if let message = controller.t3DeliveryText {
+                    // Status belongs to Scroll mode; Draw keeps the annotation canvas quiet.
+                    if controller.dragMode == .scroll, let message = controller.t3DeliveryText {
                         Text(message)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.white)
@@ -169,7 +169,7 @@ private struct BottomChrome: View {
                             .padding(.horizontal, Self.screenInset)
                             .offset(y: -AnnotateController.barHeight - Self.hintGap)
                             .allowsHitTesting(false)
-                    } else if !controller.isBrowsing || controller.delivery != nil {
+                    } else if controller.dragMode == .scroll {
                         ReviewHintLine(hint: controller.reviewHint, startedAt: controller.deliveryStartedAt)
                         // Delivery narration ("Changes applied, reinstalling 9s") runs wider than
                         // the gestures hint: keep it on one centered line within the bar's 34pt insets

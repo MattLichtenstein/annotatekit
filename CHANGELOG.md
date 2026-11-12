@@ -23,6 +23,7 @@ All notable changes to this project are documented here. The format is based on
   coordinates, and source metadata. Drag mode is transient and changes no session schema or CLI contract.
 
 ### Changed
+- Every annotation-mode opening starts in Draw instead of remembering Scroll. Scroll always shows the connection indicator or delivery status, including before Send; Draw hides the line without stopping delivery tracking.
 - New annotation threads launch with their first feedback batch and attachments, so T3 applies its branch-naming settings using the actual task. Exact launch retries and acknowledged-run records prevent duplicate delivery. Owned cleanup also clears temporary opening-message retry data; existing threads keep their branches.
 - New annotation threads follow T3 workspace defaults, including new checkouts, project overrides, and start-from-origin. Launch arguments persist before creation for stable retries; existing destinations keep their checkout.
 - T3 queued confirmations expire after six seconds, clear on closing annotations, and do not replay completed batches after relaunch. Receipt-driven content cleanup stays independent of the notice.

@@ -404,6 +404,8 @@ final class AnnotateController {
     func start() {
         guard !isActive else { return }
         dismissT3Confirmation()
+        // Each invocation starts in Draw; closing the overlay never remembers Scroll mode.
+        dragMode = .draw
         launchStart?.cancel()
         launchStart = nil
         // Nothing moves the pill while annotating, so the chrome walk rests until `stop`
@@ -413,8 +415,7 @@ final class AnnotateController {
             AccessibilityBootstrap.enable()
         }
         AnnotatableRegistry.shared.setCollecting(true)
-        if dragMode == .scroll { freezeLiveScreen() }
-        else { freezeScreen() }
+        freezeScreen()
         reviewBottomInset = reviewDockInset(in: bounds, safeInsets: safeInsets)
         isActive = true
         startIntro()
@@ -1300,14 +1301,12 @@ final class AnnotateController {
         .resolve(.init(delivery: delivery, pendingCount: annotations.count))
     }
 
-    /// The line above the review bar: it narrates the Send while a delivery shows (Figma 9273:17925 /
-    /// 18020 / 18115), which takes precedence over the other hints. Otherwise the gestures hint
-    /// (9272:17041), "<agent> connected" while the connection is news (9272:17134), or offline
-    /// whenever no agent listens (9272:17228).
+    /// Delivery takes precedence over idle connection status. Scroll skips the gesture intro so
+    /// its status indicator appears immediately; Draw keeps the review line hidden.
     var reviewHint: ReviewHint {
         .resolve(.init(
             agent: agent,
-            isIntro: isIntro,
+            isIntro: isIntro && dragMode != .scroll,
             delivery: delivery,
             notes: lastSend?.pins.count ?? 0,
             written: notesWritten
