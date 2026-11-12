@@ -66,6 +66,13 @@ No Mac: `docker run --rm -v "$PWD":/pkg -w /pkg swift:6.2-noble swift test`.
 
 ## Style
 
+## Maintained fork commits
+
+On the `custom` branch, add normal commits for new changes and preserve published history.
+Do not squash, amend published commits, rebase the branch, or force-push unless the user explicitly requests it.
+
+## Code style
+
 Swift 6 language mode with strict concurrency. Each file opens with a short header comment saying
 what it owns. Prefer small pure functions in AnnotateCore with Swift Testing coverage (`@Test`,
 `#expect`). Keep comments about *why*.
