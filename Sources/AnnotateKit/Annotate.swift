@@ -47,6 +47,8 @@ public struct AnnotateOptions: Sendable {
     public var onDismiss: (@MainActor @Sendable () -> Void)?
     /// Enables the opt-in T3 Send picker. Use a dedicated `.annotate/t3` output directory and receiver.
     public var t3ProjectID: String?
+    /// Permit the menu bar receiver to take durable ownership before sending feedback to T3.
+    public var clearsMacReceivedFeedback: Bool
     /// Clear sent feedback content only after T3 owns and acknowledges the complete bundle.
     public var clearsT3DeliveredFeedback: Bool
 
@@ -63,6 +65,7 @@ public struct AnnotateOptions: Sendable {
         promptDetail: PromptDetail = .standard,
         onDismiss: (@MainActor @Sendable () -> Void)? = nil,
         t3ProjectID: String? = nil,
+        clearsMacReceivedFeedback: Bool = false,
         clearsT3DeliveredFeedback: Bool = false
     ) {
         self.showsLauncher = showsLauncher
@@ -77,6 +80,7 @@ public struct AnnotateOptions: Sendable {
         self.promptDetail = promptDetail
         self.onDismiss = onDismiss
         self.t3ProjectID = t3ProjectID
+        self.clearsMacReceivedFeedback = clearsMacReceivedFeedback
         self.clearsT3DeliveredFeedback = clearsT3DeliveredFeedback
     }
 }
@@ -106,11 +110,14 @@ public enum Annotate {
         #endif
     }
 
-    /// Removes only content with a durable T3-owned receipt, without installing the overlay.
+    /// Removes content acknowledged by T3 or, in a phone container, the opted-in Mac receiver.
     public static func clearDeliveredFeedback(in output: URL) async {
         #if DEBUG && canImport(UIKit)
         _ = await Task.detached(priority: .utility) {
             T3DeliveryFiles.clearAcknowledgedContent(in: output)
+            #if !targetEnvironment(simulator)
+            MacReceiptFiles.clearAcknowledgedPhoneContent(in: output, isPhoneContainer: true)
+            #endif
         }.value
         #endif
     }

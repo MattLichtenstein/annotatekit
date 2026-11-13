@@ -7,6 +7,7 @@ public struct T3NoteHistory: Equatable, Sendable {
         public let sentAt: Date
         public let notes: [PinResult]
         public fileprivate(set) var filter: NoteFilter
+        public fileprivate(set) var receivedOnMac = false
     }
 
     public private(set) var batches: [Batch] = []
@@ -26,6 +27,15 @@ public struct T3NoteHistory: Equatable, Sendable {
               let index = batches.firstIndex(where: { $0.id == receipt.sessionID }),
               batches[index].filter == .sending else { return }
         batches[index].filter = .sent
+    }
+
+    /// Mac acceptance ends the phone's queue, without claiming T3 has received it.
+    public mutating func acknowledge(_ receipt: MacReceipt) {
+        guard receipt.version == 1,
+              let index = batches.firstIndex(where: { $0.id == receipt.sessionID }),
+              batches[index].filter == .sending else { return }
+        batches[index].filter = .sent
+        batches[index].receivedOnMac = true
     }
 
     public mutating func fail(id: String) {

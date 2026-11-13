@@ -47,6 +47,62 @@ swift run annotate-t3 login --origin http://127.0.0.1:3773
 swift run annotate-t3 serve --project <project-id> --root /absolute/source/checkout --node /absolute/node
 ```
 
+For a native Mac receiver, install `Annotate Inbox.app` with
+`tools/install-mac-inbox.sh --project <project-id> --root /absolute/source/checkout`.
+It installs in `~/Applications`, reuses the same credentials, and never registers a login item.
+The installer validates Node 22+ and WebSocket support before building or replacing the app.
+It uses a private runtime at `~/Library/Application Support/AnnotateKit/runtimes/node22/bin/node`
+when present, otherwise Homebrew's Node; `--node` explicitly selects another executable.
+
+The bundle holds two independent processes: the outer **Annotate Inbox** menu bar app and
+its regular window app at `Contents/Helpers/Annotate Inbox Window.app`. **Show in Menu Bar**
+on the window's Settings page (the sidebar's gear, or ⌘,) is saved locally and defaults off.
+When off, opening Annotate Inbox from Finder or Spotlight opens its window. When on, opening
+or reopening the app starts only the menu bar process and never raises the window; use Show
+Inbox, Show Trash, or a batch row in the menu bar panel to open it. Enabling the switch starts
+the menu app without activating it; disabling it gracefully quits that process. The switch
+waits for launch/termination to finish and reports a failure without silently changing the saved
+choice. Closing the window quits the window process and removes it from the Dock; an enabled
+menu bar app keeps running. Neither surface registers a login item.
+The first process to start owns listening and delivery; the other reads the same queue and
+forwards its actions as durable command files under `.annotate/t3/mac-commands`. When the
+owner quits, the other takes over within a few seconds with the saved Listener setting.
+Distributed notifications only prompt refreshes; all state stays in the private inbox folder.
+
+**Listener** and **Auto-Send New Batches** both default off and are remembered locally, shared
+by both processes. Listener controls incoming device/simulator batches; manual sending works
+with it off. Auto-Send is decided once at receipt time, for both new and existing destinations.
+Changing it never releases waiting batches. Clicking the menu bar icon toggles a compact panel:
+Listener and Auto-Send switches, then the queue with Send All beside its heading and one row per
+batch, titled by its T3 destination (the thread name, or New Thread) with its note count and when
+the phone sent it, plus Send and Trash. Trashing a batch moves each of its notes to Trash. Show
+Inbox, Show Trash (without a count), and Quit Annotate Inbox are separate hover-highlighted rows below the queue;
+Quit closes both the menu bar extra and the window app. The panel closes when you click the
+icon again, press Escape, or click elsewhere. Clicking a row opens that batch in the window app,
+launching it if needed. The window's Trash section starts collapsed; Show Trash expands it.
+The window shows each screenshot and its numbered notes on one card,
+with numbers matching the pins; double-clicking an image opens it full size. Each note can be sent on its
+own: it is copied into a new batch with the same route that is queued for delivery, and the
+original batch, which stays queued, excludes it. Sending a batch's last remaining note sends the
+batch itself. Interrupted splits are completed or abandoned on recovery, never duplicated. Controls use the system accent color. Send Batch and Send All send the
+remaining notes together, one message per batch.
+
+Move to Trash deletes an individual note from the outgoing batch. Restore remains available for
+seven days; expiry runs while the utility is open or at its next launch. Trashed note text,
+attachments, and annotated frames containing their markup are excluded from outgoing bundles.
+Clean screenshots and kept-note crops retain context. Trash survives delivery of the remaining
+batch. Restoring uses the original unsent batch, or makes a new paused batch with its original
+route if delivery already started. Sending freezes that batch's contents for idempotent retries.
+
+Hosts can additionally set `clearsMacReceivedFeedback: true` alongside
+`clearsT3DeliveredFeedback: true`. The phone then opts into a distinct Mac ownership receipt:
+after the complete bundle and queue decision are safely stored, the phone clears its queue
+and displays **Received on Mac**. A suspended phone processes cleanup on foreground/launch.
+The Mac retains its only copy until T3 accepts it, regardless of listener/auto-send settings.
+Simulator and Mac copies never clear on Mac receipts. Older phones keep their T3-only cleanup
+contract; no T3 acknowledgement is forged. The CLI continues to honor per-batch decisions once
+an inbox is managed by Annotate Inbox.
+
 Approve the printed sign-in URL in T3. The adapter restricts catalogs and every
 route to the configured project even if OAuth authorizes broader access. Credentials
 stay owner-only in `~/Library/Application Support/AnnotateKit/`, outside the mirror.

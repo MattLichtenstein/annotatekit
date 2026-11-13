@@ -240,7 +240,7 @@ struct NotesSheet: View {
             HStack(spacing: Self.rowSpacing) {
                 NoteBadge(number: result.index, mark: mark)
                 VStack(alignment: .leading, spacing: Self.textSpacing) {
-                    Text(note.t3Filter?.title ?? (outcome.label + (outcome.detail.map { " · \($0)" } ?? "")))
+                    Text(note.receivedOnMac ? "Received on Mac" : (note.t3Filter?.title ?? (outcome.label + (outcome.detail.map { " · \($0)" } ?? ""))))
                         .font(.body)
                         .foregroundStyle(.primary)
                         .lineLimit(3)
@@ -280,7 +280,7 @@ struct NotesSheet: View {
             return controller.t3NoteHistory.batches.flatMap { batch in
                 batch.notes.map {
                     SentNote(sessionID: batch.id, sentAt: batch.sentAt, result: $0,
-                             stage: nil, isLatest: false, t3Filter: batch.filter)
+                             stage: nil, isLatest: false, t3Filter: batch.filter, receivedOnMac: batch.receivedOnMac)
                 }
             }
         }
@@ -327,6 +327,7 @@ private struct SentNote: Identifiable {
     /// The last Send: its delivery stage is live and its questions can be answered here.
     let isLatest: Bool
     var t3Filter: NoteFilter? = nil
+    var receivedOnMac = false
 
     var id: String { "\(sessionID)#\(result.index)" }
 }

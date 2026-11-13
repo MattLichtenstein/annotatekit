@@ -41,6 +41,9 @@ public enum SessionWriter {
         if bundle.session.t3Route?.delivery == T3DeliveryFiles.ownedDelivery {
             try fileManager.createDirectory(at: outputDirectory.appendingPathComponent(T3DeliveryFiles.folder), withIntermediateDirectories: true)
         }
+        if bundle.session.t3Route?.acceptsMacReceipt == true {
+            try fileManager.createDirectory(at: outputDirectory.appendingPathComponent(MacReceiptFiles.folder), withIntermediateDirectories: true)
+        }
 
         let gitignore = outputDirectory.appendingPathComponent(".gitignore")
         if !fileManager.fileExists(atPath: gitignore.path) {

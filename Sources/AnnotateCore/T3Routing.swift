@@ -9,12 +9,15 @@ public struct T3Route: Codable, Sendable, Equatable {
     public var conversationID: UUID
     /// Additive capability: T3 must own the complete bundle before local content can be cleared.
     public var delivery: String?
+    /// Opt-in to transferring phone storage ownership to the Mac before T3 delivery.
+    public var acceptsMacReceipt: Bool?
 
-    public init(projectID: String, threadID: String? = nil, conversationID: UUID = UUID(), delivery: String? = nil) {
+    public init(projectID: String, threadID: String? = nil, conversationID: UUID = UUID(), delivery: String? = nil, acceptsMacReceipt: Bool? = nil) {
         self.projectID = projectID
         self.threadID = threadID
         self.conversationID = conversationID
         self.delivery = delivery
+        self.acceptsMacReceipt = acceptsMacReceipt
     }
 }
 

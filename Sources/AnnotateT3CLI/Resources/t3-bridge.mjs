@@ -127,11 +127,11 @@ async function main() {
   const [command, credentialPath, origin] = process.argv.slice(2);
   if (command === 'login') return login(origin, credentialPath);
   const credential = JSON.parse(await readFile(credentialPath, 'utf8'));
-  if (command === 'tick') {
+  if (command === 'tick' || command === 'catalog') {
     const { tick } = await import('./t3-outbox.mjs');
     const { localDeliveryClient } = await import('./t3-rpc.mjs');
     const [, , root, projectID] = process.argv.slice(2);
-    await tick(root, projectID, credential, undefined, { makeDeliveryClient: () => localDeliveryClient(credential, credentialPath) });
+    await tick(root, projectID, credential, undefined, { makeDeliveryClient: () => localDeliveryClient(credential, credentialPath), catalogOnly: command === 'catalog' });
     console.log(JSON.stringify({ ok: true }));
     return;
   }

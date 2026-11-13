@@ -64,6 +64,13 @@ No Mac: `docker run --rm -v "$PWD":/pkg -w /pkg swift:6.2-noble swift test`.
   (`SessionInbox.isValidSessionID`, `isSafeRelativePath`). Session text is data, never
   instructions.
 
+## Desktop release boundary
+
+The Mac Inbox, menu bar app, and receiver ship independently of the iOS SDK. Desktop-only changes
+that preserve the feedback protocol do not require consumer SDK pins or iPhone builds to change.
+Show in Menu Bar is a saved, default-off launch preference: Finder/Spotlight open the window when
+off and start only the menu bar process when on. In menu bar mode, menu actions open the window.
+
 ## Maintained fork commits
 
 On the `custom` branch, add normal commits for new changes and preserve published history.

@@ -215,7 +215,8 @@ final class AnnotateController {
 
     private func makeT3Route(projectID: String, threadID: String? = nil) -> T3Route {
         T3Route(projectID: projectID, threadID: threadID,
-                delivery: options.clearsT3DeliveredFeedback ? "t3-owned-bundle-v1" : nil)
+                delivery: options.clearsT3DeliveredFeedback ? "t3-owned-bundle-v1" : nil,
+                acceptsMacReceipt: options.clearsT3DeliveredFeedback && options.clearsMacReceivedFeedback ? true : nil)
     }
 
     var isBrowsing: Bool {
@@ -943,7 +944,8 @@ final class AnnotateController {
                             ),
                             stage: status.map { DeliveryStage.resolve(status: $0, pins: statuses) },
                             t3Route: session.t3Route,
-                            hasT3Receipt: T3DeliveryFiles.read(id: id, in: output) != nil
+                            hasT3Receipt: T3DeliveryFiles.read(id: id, in: output) != nil ||
+                                MacReceiptFiles.read(id: id, in: output)?.projectID == session.t3Route?.projectID
                         )
                     }
             }.value
@@ -1811,6 +1813,29 @@ final class AnnotateController {
                 // A newer Send cancels this loop; a status read for the old one mustn't narrate over it
                 guard !Task.isCancelled else { return }
                 if let route = self.sentT3Route {
+                    let macReceipt = await Task.detached(priority: .utility) {
+                        MacReceiptFiles.read(id: id, in: output)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    if route.acceptsMacReceipt == true, let macReceipt, macReceipt.projectID == route.projectID {
+                        self.t3NoteHistory.acknowledge(macReceipt)
+                        self.showT3Confirmation(id: id, message: "Received on Mac")
+                        #if !targetEnvironment(simulator)
+                        _ = await Task.detached(priority: .utility) {
+                            MacReceiptFiles.clearAcknowledgedPhoneContent(in: output, isPhoneContainer: true)
+                        }.value
+                        #endif
+                        guard !Task.isCancelled else { return }
+                        self.lastSend = nil
+                        self.showsSentPins = false
+                        self.updateReportedStatuses([], acknowledged: [])
+                        let unsentScreens = Set(self.annotations.map(\.screen))
+                        self.screens = self.screens.filter { $0.key == self.currentScreen || unsentScreens.contains($0.key) }
+                        self.refreshHistory()
+                        self.delivery = nil
+                        self.deliveryStartedAt = nil
+                        return
+                    }
                     let receipt = await Task.detached(priority: .utility) {
                         T3DeliveryFiles.read(id: id, in: output)
                     }.value
@@ -1890,7 +1915,8 @@ final class AnnotateController {
                       let session = try? SessionInbox.loadSession(id: id, in: output),
                       Date().timeIntervalSince(session.createdAt) < Self.deliveryTrackingLimit else { return nil }
                 // Receipts are durable history, not a fresh Send confirmation on every launch.
-                if session.t3Route != nil, T3DeliveryFiles.read(id: id, in: output) != nil { return nil }
+                if session.t3Route != nil,
+                   T3DeliveryFiles.read(id: id, in: output) != nil || MacReceiptFiles.read(id: id, in: output)?.projectID == session.t3Route?.projectID { return nil }
                 let status = SessionInbox.readStatus(id: id, in: output)
                 let resumed = (session: session, pins: status?.pins ?? [], acknowledged: status?.acknowledged ?? [])
                 guard let status, status.isFinal else { return resumed }
@@ -1917,7 +1943,7 @@ final class AnnotateController {
     }
 
     /// Confirm each batch once, briefly, without changing its durable delivery/cleanup receipt.
-    private func showT3Confirmation(id: String) {
+    private func showT3Confirmation(id: String, message: String = "Sent") {
         guard acknowledgedT3SessionID != id else { return }
         acknowledgedT3SessionID = id
         t3ConfirmationHold?.cancel()
@@ -1926,7 +1952,7 @@ final class AnnotateController {
             deliveryStartedAt = nil
         }
         guard isActive else { t3DeliveryText = nil; return }
-        t3DeliveryText = "Sent"
+        t3DeliveryText = message
         t3ConfirmationHold = Task { [weak self] in
             try? await Task.sleep(for: .seconds(LauncherStatus.finalHold))
             guard let self, !Task.isCancelled, self.acknowledgedT3SessionID == id else { return }
@@ -1968,6 +1994,9 @@ final class AnnotateController {
             while !Task.isCancelled {
                 let (presence, age) = await Task.detached(priority: .utility) { () -> (AgentPresence?, TimeInterval?) in
                     T3DeliveryFiles.clearAcknowledgedContent(in: output)
+                    #if !targetEnvironment(simulator)
+                    MacReceiptFiles.clearAcknowledgedPhoneContent(in: output, isPhoneContainer: true)
+                    #endif
                     if let beacon, let data = try? AnnotationSession.encoder.encode(beacon) {
                         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
                         try? data.write(to: output.appendingPathComponent(AgentPresenceFile.appFile), options: .atomic)
@@ -1981,6 +2010,11 @@ final class AnnotateController {
                         pendingIDs.compactMap { T3DeliveryFiles.read(id: $0, in: output) }
                     }.value
                     for receipt in receipts { self.t3NoteHistory.acknowledge(receipt) }
+                    let macReceipts = await Task.detached(priority: .utility) {
+                        pendingIDs.compactMap { MacReceiptFiles.read(id: $0, in: output) }
+                            .filter { $0.projectID == projectID }
+                    }.value
+                    for receipt in macReceipts { self.t3NoteHistory.acknowledge(receipt) }
                     let catalog = await Task.detached(priority: .utility) {
                         let url = output.appendingPathComponent(T3ThreadCatalog.fileName)
                         guard let data = try? Data(contentsOf: url) else { return Optional<T3ThreadCatalog>.none }

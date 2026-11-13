@@ -475,6 +475,28 @@ struct Checkout {
 
 /// Routed inboxes preserve checkout isolation while sharing only the explicit catalog/receipt files.
 @Suite struct T3MirrorTests {
+    @Test func forwardsMacOwnershipWhileKeepingTheMacBundle() async throws {
+        let checkout = try Checkout()
+        defer { checkout.remove() }
+        let app = "com.example.app"
+        let bridge = FakeBridge(apps: [app])
+        let output = checkout.output.appendingPathComponent("t3")
+        let id = try AgentFixtures.writeSession(to: output, app: AppInfo(bundleID: app, installFile: checkout.installFile))
+        let directory = SessionInbox.sessionDirectory(id, in: output)
+        var session = try SessionInbox.loadSession(id: id, in: output)
+        session.t3Route = T3Route(projectID: "koa", delivery: T3DeliveryFiles.ownedDelivery, acceptsMacReceipt: true)
+        try AnnotationSession.encoder.encode(session).write(to: directory.appendingPathComponent("session.json"))
+        let remote = "Documents/.annotate/t3"
+        bridge.put(try Data(contentsOf: directory.appendingPathComponent("session.json")), at: "\(remote)/sessions/\(id)/session.json", app: app)
+        try FileManager.default.createDirectory(at: output.appendingPathComponent(MacReceiptFiles.folder), withIntermediateDirectories: true)
+        try AnnotationSession.encoder.encode(MacReceipt(sessionID: id, projectID: "koa")).write(to: MacReceiptFiles.receiptURL(id: id, in: output))
+        let mirror = DeviceMirror(outputDirectory: output, cutoffID: "", bridge: bridge, projectBundleIDs: [app], projectRoot: checkout.root, remoteDirectory: remote)
+        await mirror.tick()
+        #expect(bridge.file("\(remote)/mac-receipts/\(id).json", app: app) != nil)
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+        #expect(bridge.file("\(remote)/deliveries/\(id).json", app: app) == nil)
+    }
+
     @Test func forwardsOwnedReceiptAfterMacContentWasDeleted() async throws {
         let checkout = try Checkout()
         defer { checkout.remove() }

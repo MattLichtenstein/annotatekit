@@ -41,6 +41,9 @@ export async function clearOwnedBatch(root, id) {
     }
   }
   await rm(join(root, 'sessions', id), { recursive: true, force: true });
+  await rm(join(root, 'mac-delivery', id), { recursive: true, force: true });
+  await rm(join(root, 'mac-queue', `${id}.json`), { force: true });
+  await rm(join(root, 'mac-errors', `${id}.json`), { force: true });
   await rm(join(root, '.routing', `batch-${id}.zip`), { force: true });
   await rm(join(root, '.routing', `batch-${id}.json`), { force: true });
   if ((await readFile(join(root, 'latest'), 'utf8').catch(() => '')).trim() === `sessions/${id}`) {

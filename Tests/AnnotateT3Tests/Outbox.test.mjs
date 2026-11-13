@@ -162,6 +162,92 @@ function workspaceClient() {
   } };
 }
 
+test('managed inbox holds both new and existing destinations until each batch is requested', async () => fixture(async root => {
+  await bundle(root, '20261113-new');
+  await bundle(root, '20261113-existing', 'existing');
+  await privateJSON(join(root, 'mac-inbox.json'), { version: 1, projectID: 'koa' });
+  for (const id of ['20261113-new', '20261113-existing']) {
+    await privateJSON(join(root, 'mac-queue', `${id}.json`), { version: 1, sessionID: id, projectID: 'koa', sendRequested: false });
+  }
+  const remote = server();
+  await tick(root, 'koa', credential, remote.call, { deliveryClient: workspaceClient() });
+  assert.equal(remote.effects.size, 0);
+  assert.equal(remote.calls.filter(call => ['t3_thread_launch', 't3_thread_send', 't3_thread_read'].includes(call.name)).length, 0);
+  await privateJSON(join(root, 'mac-queue', '20261113-existing.json'), { version: 1, sessionID: '20261113-existing', projectID: 'koa', sendRequested: true });
+  await tick(root, 'koa', credential, remote.call, { deliveryClient: workspaceClient() });
+  assert.equal(remote.calls.filter(call => call.name === 't3_thread_send').length, 1);
+  assert.equal(remote.calls.filter(call => call.name === 't3_thread_launch').length, 0);
+}));
+
+test('managed inbox never sends unregistered batches and catalog refresh never delivers', async () => fixture(async root => {
+  await bundle(root, '20261113-new');
+  await privateJSON(join(root, 'mac-inbox.json'), { version: 1, projectID: 'koa' });
+  const remote = server();
+  await tick(root, 'koa', credential, remote.call, { deliveryClient: workspaceClient() });
+  assert.equal(remote.effects.size, 0);
+  await privateJSON(join(root, 'mac-queue', '20261113-new.json'), { version: 1, sessionID: '20261113-new', projectID: 'koa', sendRequested: true });
+  await tick(root, 'koa', credential, remote.call, { deliveryClient: workspaceClient(), catalogOnly: true });
+  assert.equal(remote.effects.size, 0);
+}));
+
+test('filtered owned batches use only the committed projection and preserve the source until acknowledgement', async () => fixture(async root => {
+  const id = '20261113-filtered';
+  await bundle(root, id, 'existing');
+  const source = join(root, 'sessions', id);
+  const session = JSON.parse(await readFile(join(source, 'session.json')));
+  session.t3Route.delivery = 't3-owned-bundle-v1';
+  session.annotations = [{ id: 'keep', comment: 'Keep this' }, { id: 'trash', comment: 'SECRET TRASH' }];
+  await privateJSON(join(source, 'session.json'), session);
+  const projection = join(root, 'mac-delivery', id);
+  await mkdir(projection, { recursive: true });
+  await privateJSON(join(projection, 'session.json'), { ...session, annotations: [session.annotations[0]] });
+  await writeFile(join(projection, 'prompt.md'), 'Only the kept annotation.');
+  await privateJSON(join(root, 'mac-inbox.json'), { version: 1, projectID: 'koa' });
+  await privateJSON(join(root, 'mac-queue', `${id}.json`), { version: 1, sessionID: id, projectID: 'koa', sendRequested: true, hasProjection: true });
+  let input;
+  await tick(root, 'koa', credential, server().call, { deliveryClient: {}, deliver: async value => { input = value; } });
+  assert.equal(input.directory, projection);
+  assert.equal(input.session.annotations.length, 1);
+  assert.equal(input.session.annotations[0].id, 'keep');
+  assert.equal((await stat(join(source, 'session.json'))).isFile(), true);
+}));
+
+test('one managed delivery failure does not prevent Send All from sending another batch', async () => fixture(async root => {
+  await privateJSON(join(root, 'mac-inbox.json'), { version: 1, projectID: 'koa' });
+  for (const id of ['20261113-a', '20261113-b']) {
+    await bundle(root, id, 'existing');
+    await privateJSON(join(root, 'mac-queue', `${id}.json`), { version: 1, sessionID: id, projectID: 'koa', sendRequested: true });
+  }
+  const remote = server();
+  const call = async (name, args) => {
+    if (name === 't3_thread_send' && args.clientRequestId === 'annotatekit-batch-20261113-a') throw Error('sensitive server detail');
+    return remote.call(name, args);
+  };
+  await tick(root, 'koa', credential, call);
+  assert.equal((await stat(join(root, 'sessions/20261113-b/t3-delivery.json'))).isFile(), true);
+  const error = await readFile(join(root, 'mac-errors/20261113-a.json'), 'utf8');
+  assert.ok(!error.includes('sensitive server detail'));
+}));
+
+test('legacy filtered sends retain their referenced projection and acknowledge the source once', async () => fixture(async root => {
+  const id = '20261113-legacy-filtered';
+  const source = await bundle(root, id, 'existing');
+  const session = JSON.parse(await readFile(join(source, 'session.json')));
+  const projection = join(root, 'mac-delivery', id);
+  await mkdir(projection, { recursive: true });
+  await privateJSON(join(projection, 'session.json'), { ...session, annotations: [{ id: 'kept' }] });
+  await writeFile(join(projection, 'prompt.md'), 'Kept note');
+  await privateJSON(join(root, 'mac-inbox.json'), { version: 1, projectID: 'koa' });
+  await privateJSON(join(root, 'mac-queue', `${id}.json`), { version: 1, sessionID: id, projectID: 'koa', sendRequested: true, hasProjection: true });
+  const remote = server();
+  await tick(root, 'koa', credential, remote.call);
+  await tick(root, 'koa', credential, remote.call);
+  assert.equal(remote.calls.filter(call => call.name === 't3_thread_send').length, 1);
+  assert.ok(remote.calls.find(call => call.name === 't3_thread_send').args.message.includes(projection));
+  assert.equal((await stat(join(source, 't3-delivery.json'))).isFile(), true);
+  assert.equal((await stat(join(projection, 'session.json'))).isFile(), true);
+}));
+
 test('an ambiguous new-thread launch keeps the same checkout choice after T3 settings change', async () => fixture(async root => {
   await bundle(root, '20261112-010101-one');
   const remote = server();

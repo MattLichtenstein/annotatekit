@@ -1,5 +1,38 @@
 # Changelog
 
+- Finder and Spotlight now follow the saved Show in Menu Bar setting (off by default): off opens
+  the Inbox window; on starts only the menu bar process, including when reopened. The window
+  remains available from the menu panel. The toggle waits for actual process launch/termination,
+  preserves its saved choice on failure, and reports errors. Desktop-only packaging retains both
+  existing process identities and shared settings; no SDK or feedback-protocol update is needed.
+
+- Annotate Inbox is now a regular window app with a separate, optional menu bar extra in the
+  same bundle. Either runs independently: the first to start owns listening and delivery, the
+  other forwards actions through durable command files and takes over when the owner quits.
+  Closing the window quits the window app. The menu bar panel toggles from its icon and is a
+  compact text list with switches, sent times instead of a live timer, per-batch Trash and Send,
+  separate menu-style action rows, and Quit Annotate Inbox closing both processes. Batches are
+  titled by their T3 destination, and single notes can be sent on their own from the window.
+  The app has its own icon (a paper plane rising from an inbox tray), rendered by
+  `tools/mac-inbox/make-icon.swift` and installed into both bundles. The window shows each screenshot and its numbered notes on
+  one card and has a Settings page for receiving and the menu bar extra. Both use the system
+  accent color.
+
+- Added a compact native menu bar panel with Listener and Auto-send switches, screenshot
+  thumbnails, note/destination previews, and Send Batch/Send All and Trash actions. Preview
+  cards open the full viewer; thumbnails load off the main thread without persistent caches.
+
+- The Mac inbox installer checks Node 22+ and WebSocket support before installation, prefers
+  an available private Node 22 runtime, and rejects unsupported executables without replacing the app.
+
+- Added a native Annotate Inbox menu bar utility with independent listener and new-batch
+  auto-send controls (both initially off), local batch inspection, manual Send/Send All, and
+  per-note Trash with Restore and seven-day expiry. It never registers a login item.
+- Added optional schema-1 `t3Route.acceptsMacReceipt` and separate Mac ownership receipts.
+  Opted-in phones clear received batches before T3 delivery; older phones retain T3-only
+  cleanup. Managed inbox decisions survive restarts and are honored by the CLI. Trashed
+  notes and attachments are excluded from immutable outgoing batch projections.
+
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

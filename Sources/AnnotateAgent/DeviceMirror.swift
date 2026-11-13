@@ -102,6 +102,7 @@ public actor DeviceMirror {
         let since: Date
         var isRouted = false
         var receiptForwarded: Data?
+        var macReceiptForwarded: Data?
         var forwarded: Data?
         /// Last time the device's `replies.json` was pulled; throttled to `hotInterval`.
         var repliesPulledAt: Date = .distantPast
@@ -115,6 +116,7 @@ public actor DeviceMirror {
     let bridge: DeviceBridge
     let projectBundleIDs: [String]
     let log: @Sendable (String) -> Void
+    let onReceive: (@Sendable (AnnotationSession) async throws -> Void)?
 
     private var lastDiscovery: Date = .distantPast
     private var targets: [Target: TargetState] = [:]
@@ -133,7 +135,8 @@ public actor DeviceMirror {
         projectRoot: URL? = nil,
         remoteDirectory: String = DeviceMirror.remoteRoot,
         sharedFiles: [String] = [],
-        log: @escaping @Sendable (String) -> Void = { _ in }
+        log: @escaping @Sendable (String) -> Void = { _ in },
+        onReceive: (@Sendable (AnnotationSession) async throws -> Void)? = nil
     ) {
         self.outputDirectory = outputDirectory
         self.projectRoot = projectRoot ?? outputDirectory.deletingLastPathComponent()
@@ -143,6 +146,7 @@ public actor DeviceMirror {
         self.bridge = bridge
         self.projectBundleIDs = projectBundleIDs ?? BundleIDPattern.scan(projectRoot: self.projectRoot)
         self.log = log
+        self.onReceive = onReceive
     }
 
     /// One pass; the hub calls it about once a second and each step keeps its own interval.
@@ -162,8 +166,10 @@ public actor DeviceMirror {
             }
         }
         for target in warm {
+            guard !Task.isCancelled else { return }
             await poll(target, now: now)
         }
+        guard !Task.isCancelled else { return }
         if let target = cold.min(by: { (targets[$0]?.lastPolled ?? .distantPast) < (targets[$1]?.lastPolled ?? .distantPast) }) {
             await poll(target, now: now)
         }
@@ -273,6 +279,10 @@ public actor DeviceMirror {
             return
         }
         guard !fileManager.fileExists(atPath: destination.path) else {
+            do {
+                let session = try SessionInbox.loadSession(id: id, in: outputDirectory)
+                try await onReceive?(session)
+            } catch { seen.remove(id); return }
             // Reattach status forwarding after the receiver restarts, including offline batches.
             mirrored[id] = Mirrored(target: target, since: now,
                                     isRouted: (try? SessionInbox.loadSession(id: id, in: outputDirectory).t3Route) != nil)
@@ -304,6 +314,7 @@ public actor DeviceMirror {
             try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             // A rename, so watchers never see a half-copied bundle
             try fileManager.moveItem(at: bundle, to: destination)
+            try await onReceive?(session)
             try? Data("\(SessionWriter.sessionsFolder)/\(id)\n".utf8)
                 .write(to: outputDirectory.appendingPathComponent("latest"), options: .atomic)
             mirrored[id] = Mirrored(target: target, since: now, isRouted: session.t3Route != nil)
@@ -328,6 +339,14 @@ public actor DeviceMirror {
                 continue
             }
             let directory = SessionInbox.sessionDirectory(id, in: outputDirectory)
+            let macReceipt = MacReceiptFiles.receiptURL(id: id, in: outputDirectory)
+            if MacReceiptFiles.read(id: id, in: outputDirectory) != nil,
+               let data = try? Data(contentsOf: macReceipt), data != entry.macReceiptForwarded {
+                // This receipt transfers ownership only to the Mac; it never grants Mac cleanup.
+                if (try? await bridge.copy(macReceipt, to: "\(remoteDirectory)/\(MacReceiptFiles.folder)/\(id).json", on: entry.target.device, app: entry.target.app)) != nil {
+                    mirrored[id]?.macReceiptForwarded = data
+                }
+            }
             let ownedReceipt = T3DeliveryFiles.receiptURL(id: id, in: outputDirectory)
             let hasOwnedReceipt = fileManagerExists(ownedReceipt)
             let receipt = hasOwnedReceipt ? ownedReceipt : directory.appendingPathComponent(T3DeliveryReceipt.fileName)

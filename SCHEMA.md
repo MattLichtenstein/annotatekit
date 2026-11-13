@@ -21,7 +21,7 @@ decode them without UIKit.
 ### Opt-in T3 routing
 
 Routed bundles live in a separate `.annotate/t3/sessions/<id>` inbox. `session.json`
-remains schema 1 and adds optional `t3Route: {projectID, threadID?, conversationID, delivery?}`.
+remains schema 1 and adds optional `t3Route: {projectID, threadID?, conversationID, delivery?, acceptsMacReceipt?}`.
 A missing threadID means create/reuse the new thread identified by conversationID.
 The UUID is created in memory and written into each batch; relaunch does not restore
 it as the current destination. Missing route fields preserve legacy decoding.
@@ -41,6 +41,41 @@ ownership receipt authorize content deletion. The Mac writes the receipt before
 clearing its original, temporary ZIP, staging copies, and per-batch upload state;
 the phone clears acknowledged content while active or at its host's next cleanup call.
 Unsent/pending content remains. Active canvas memory lasts until closed.
+
+The native Mac utility marks an inbox with `mac-inbox.json: {version: 1, projectID}`.
+`mac-queue/<id>.json` stores version 1, sessionID, projectID, receivedAt, sendRequested,
+optional trashedAnnotationIDs, and optional hasProjection. Auto-send is latched once when
+the Mac first accepts a batch. Existing batches on first adoption remain paused. UI preference
+changes never rewrite these decisions. The CLI honors these records too; unregistered or
+unrequested batches in a managed inbox cannot create, update, or upload into T3 threads.
+
+Phone routes additionally opting into `acceptsMacReceipt: true` prepare `mac-receipts/`.
+After validating and synchronizing the complete local copy and committing its queue entry,
+the Mac writes `mac-receipts/<id>.json: {version: 1, sessionID, projectID, receivedAt}`.
+The mirror forwards this separate receipt. Only an opted-in, matching owned phone route may
+clear on it. Mac/simulator storage never clears on this receipt, and older phones keep their
+T3-only contract. On the phone, Sent note details can say Received on Mac; this is not a T3
+acknowledgement. Suspended phones clean up on their next foreground/launch.
+
+`mac-trash/<trash-id>/trash.json` stores version 1, id, originalSessionID, annotationID,
+projectID, deletedAt, and optional isRestored. Its `bundle/` holds a single-note subset and
+needed screenshots/attachments, independent of the remaining batch's delivery. Trash expires
+seven days after deletion and purges while the utility runs or on its next launch, including
+deleted-note copies in an unsent original. Restore rejoins the original unrequested batch or
+creates a new paused batch with the original route. Commit markers recover interrupted user
+actions. Incomplete uncommitted Trash copies are removed at recovery.
+
+For a batch containing trashed notes, Send commits an immutable `mac-delivery/<id>/` subset
+before setting sendRequested. It preserves unknown manifest fields, excludes trashed note
+text/crops/references and annotated frames containing their markup, retains clean context and
+kept-note crops, and regenerates prompt.md. All remaining notes travel together. Editing/Trash
+is unavailable once sending starts, preserving exact ambiguous retries. `mac-errors/<id>.json`
+contains only a bounded generic failure message. Confirmed owned delivery clears source,
+projection, queue entry and error; Trash survives independently until restore/expiry. Both
+listener and auto-send preferences default off; no login item is installed. The Mac-only
+`showInMenuBar` Boolean is saved in the existing `dev.annotatekit.inbox` UserDefaults domain
+shared by both processes and defaults to false when absent. It controls Finder/Spotlight launch
+routing and has no effect on session schemas, phone settings, or queued-batch send decisions.
 
 Legacy routes have no ownership marker; their `sessions/<id>/t3-delivery.json`
 receipt omits contentStoredInT3 and cannot authorize cleanup. Messages reference
