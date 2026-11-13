@@ -99,6 +99,7 @@ final class OverlayWindow: UIWindow {
     private weak var previousKeyWindow: UIWindow?
     private let liveInteraction = LiveAppInteraction()
     private var passesAppSwipes = false
+    private var pendingHide: Task<Void, Never>?
 
     init(windowScene: UIWindowScene, controller: AnnotateController) {
         self.controller = controller
@@ -136,6 +137,8 @@ final class OverlayWindow: UIWindow {
     }
 
     func activate() {
+        pendingHide?.cancel()
+        pendingHide = nil
         guard !isKeyWindow else { return }
         previousKeyWindow = windowScene?.windows.first { $0.isKeyWindow && $0 !== self }
         makeKey()
@@ -147,9 +150,15 @@ final class OverlayWindow: UIWindow {
         previousKeyWindow?.makeKey()
         previousKeyWindow = nil
         if !controller.isActive, !controller.options.showsLauncher {
-            // A transparent, hit-test-passing window can still participate in UIKit motion routing.
-            // With no launcher to display, remove it from the visible window stack after closing.
-            isHidden = true
+            // Let SwiftUI finish the reverse entrance before removing the window from motion routing.
+            // Touches already pass through while inactive. Reopening cancels this pending hide.
+            pendingHide?.cancel()
+            pendingHide = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(OverlayRoot.modeDuration))
+                guard !Task.isCancelled, let self, !self.controller.isActive else { return }
+                self.isHidden = true
+                self.pendingHide = nil
+            }
         }
     }
 }

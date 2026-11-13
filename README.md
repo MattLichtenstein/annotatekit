@@ -164,11 +164,11 @@ Each opening starts in Draw mode, including after closing with X and shaking to 
 Scroll mode always shows the connection indicator or current delivery status above
 the toolbar, including before Send. Draw hides the line while delivery tracking continues.
 
-The screen-edge glow and bottom wash ease in together over 0.9 seconds at 75% intensity when review opens and keep animating while scrolling. Scroll mode has no instructional hint; delivery updates still appear.
+The screen-edge glow and bottom wash ease in together over 0.3 seconds at 75% intensity when review opens and keep animating while scrolling. Scroll mode has no instructional hint; delivery updates still appear.
 In Scroll mode, swipes scroll the real app while taps and holds still create annotations; tapping
 does not activate the app's buttons. A note freezes its current screen while you write, then saving
 returns to live scrolling. Existing notes retain their original captures and remain available in My Notes.
-The toolbar's **X** closes annotation mode and keeps unsent notes. Hosts that invoke review through a shake responder can use `AnnotateOptions.onDismiss` to restore focus after the SDK releases its window.
+The toolbar's **X** closes annotation mode and keeps unsent notes. Closing reverses the entrance: the toolbar, edge glow, and bottom wash enter and exit together with one 0.3-second ease-in-out. Explicit layer ordering keeps the glow above the frozen screenshot throughout closing. The departing toolbar retains its active docking position through the fade. Reduce Motion uses fades without the toolbar movement. Hosts with no launcher keep the overlay window visible through that exit, returning touches and keyboard ownership immediately. Hosts that invoke review through a shake responder can use `AnnotateOptions.onDismiss` to restore focus after the SDK releases its window.
 
 1. Tap **Annotate** to freeze the screen
 2. **Draw**, **tap** an element, or **hold** on a spot

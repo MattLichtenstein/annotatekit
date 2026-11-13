@@ -9,8 +9,8 @@
 // while annotate mode is open), all over a blue frost that runs from the chrome's top down to the
 // screen's bottom. The notes sheet (every note and the last Send's outcomes) hangs off the chrome.
 // Motion (no Figma motion context): entering and leaving annotate mode fades the frozen screen, its
-// dim in and out over the same `modeDuration` the bottom chrome
-// uses, while the softer edge glow and bottom frost ease in together more gradually. The bottom chrome
+// dim, edge glow, bottom frost and bottom chrome together with one 0.3-second ease-in-out. Explicit
+// layer ordering keeps the glow above the frozen screenshot for the whole exit. The bottom chrome
 // (`BottomChrome`) rises into place and sinks away; swaps between
 // the review bar and the comment or reply card follow one rule on the same timing: the arriving
 // piece rises from below like the chrome does, the leaving one shrinks and fades in place like the
@@ -34,31 +34,56 @@ struct OverlayRoot: View {
     let controller: AnnotateController
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Top of the bottom chrome, measured by BottomChrome; ActiveOverlay's gradient starts there.
+    /// Top of the bottom chrome, measured by BottomChrome; ActiveGlow's wash starts there.
     @State private var chromeTop: CGFloat?
+    // Lazy installation can start before SwiftUI's first render. Mount an empty root first so that
+    // the first opening receives the same insertion transition as every subsequent opening.
+    @State private var isReadyForModeTransition = false
 
     /// How small the launcher pill gets as it fades out (and grows back from as it fades in).
     fileprivate static let launcherHiddenScale: CGFloat = 0.8
     /// How far below its place the bottom chrome starts as annotate mode opens (and ends as it closes).
     fileprivate static let chromeEntranceOffset: CGFloat = 48
-    /// How long entering and leaving annotate mode takes: the chrome's rise and the fade of the frozen
-    /// screen and its dim share it; both glow layers have a slower, shared entrance.
+    /// One clock and curve for the toolbar, frozen backdrop, edge glow and wash in both directions.
     static let modeDuration: Double = 0.3
-    /// The chrome's rise and sink, and the launcher's scale.
-    fileprivate static let modeAnimation: Animation = .snappy(duration: modeDuration)
+    fileprivate static let modeAnimation: Animation = .easeInOut(duration: modeDuration)
+    /// Launcher scaling and in-mode card swaps retain their brief snap.
+    fileprivate static let inModeAnimation: Animation = .snappy(duration: 0.3)
+
+    private enum UX {
+        static let backdropZIndex: Double = 1
+        static let glowZIndex: Double = 2
+        static let annotationsZIndex: Double = 3
+        static let chromeZIndex: Double = 4
+        static let toastZIndex: Double = 5
+    }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if controller.isActive {
-                ActiveOverlay(controller: controller, chromeTop: chromeTop)
+            if controller.isActive && isReadyForModeTransition {
+                FrozenBackdrop(bounds: controller.bounds, image: controller.frozenImage,
+                               isBrowsing: controller.isBrowsing)
                     .transition(.opacity)
+                    .zIndex(UX.backdropZIndex)
+                ActiveGlow(bounds: controller.bounds, chromeTop: chromeTop,
+                           screenChromeBottom: controller.screenChromeBottom)
+                    .transition(.opacity)
+                    // Departing ZStack children otherwise lose their sibling order, hiding the glow
+                    // behind the frozen screenshot until that screenshot finishes fading away.
+                    .zIndex(UX.glowZIndex)
+                ActiveOverlay(controller: controller)
+                    .transition(.opacity)
+                    .zIndex(UX.annotationsZIndex)
                 // A sibling rather than part of ActiveOverlay so it gets its own entrance: only the
                 // views an `if` inserts run a transition, never their children
-                BottomChrome(controller: controller, chromeTop: $chromeTop)
+                BottomChrome(controller: controller, chromeTop: $chromeTop,
+                             screenChromeBottom: controller.screenChromeBottom)
                     .transition(chromeEntrance)
-            } else if controller.options.showsLauncher && controller.isLauncherRevealed {
+                    .zIndex(UX.chromeZIndex)
+            } else if !controller.isActive && controller.options.showsLauncher && controller.isLauncherRevealed {
                 LauncherButton(controller: controller)
                     .transition(launcherTransition)
+                    .zIndex(UX.chromeZIndex)
             }
 
             // In-mode messages ("Removed pin 2"); delivery progress lives on the launcher pill
@@ -66,12 +91,18 @@ struct OverlayRoot: View {
                 ToastView(message: toast.message, controller: controller)
                     .id(toast.id)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(UX.toastZIndex)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .ignoresSafeArea()
         .animation(Self.modeAnimation, value: controller.isActive)
-        .animation(Self.modeAnimation, value: controller.isLauncherRevealed)
+        .animation(Self.modeAnimation, value: isReadyForModeTransition)
+        .task {
+            await Task.yield()
+            isReadyForModeTransition = true
+        }
+        .animation(Self.inModeAnimation, value: controller.isLauncherRevealed)
         .animation(.snappy(duration: 0.2), value: controller.toast)
     }
 
@@ -101,6 +132,9 @@ struct OverlayRoot: View {
 private struct BottomChrome: View {
     let controller: AnnotateController
     @Binding var chromeTop: CGFloat?
+    // Stop clears the controller's active docking inset. Retain the last active baseline while the
+    // outgoing toolbar fades, especially when Reduce Motion removes its offset transition.
+    let screenChromeBottom: CGFloat
 
     /// A card over the keyboard: 8pt from the screen sides and 8pt above the keyboard (Figma
     /// 9276:27184: `pb-[8px] px-[8px]`).
@@ -126,7 +160,7 @@ private struct BottomChrome: View {
         // Distance from each chrome's bottom down to the screen's bottom edge. Each child carries its
         // own, so a card leaving with the keyboard and the bar arriving at the home indicator overlap
         // correctly while they swap
-        let belowBar = max(bounds.maxY - controller.screenChromeBottom, 0)
+        let belowBar = max(bounds.maxY - screenChromeBottom, 0)
         // Held in place while a leaving card waits for the keyboard (AnnotateController.holdCardDock)
         let dock = controller.cardDock
         let cardSides = dock.isKeyboardUp ? Self.keyboardInset : Self.screenInset
@@ -183,10 +217,10 @@ private struct BottomChrome: View {
                 .transition(swapTransition)
             }
         }
-        // Bar ↔ card swaps share annotate mode's own timing, so they move like the launcher ↔ bar swap
-        .animation(OverlayRoot.modeAnimation, value: chromeKind)
+        // Card swaps keep their brief snap independently of the full overlay's entrance and exit.
+        .animation(OverlayRoot.inModeAnimation, value: chromeKind)
         .frame(width: bounds.width)
-        // The gradient lives in ActiveOverlay (under markers and badges), so it can't simply be
+        // The gradient lives in ActiveGlow (under markers and badges), so it can't simply be
         // this stack's background; it reads the stack's top from here instead. The tree ignores
         // the safe area in its own window, so global = screen points, like `bounds`.
         .onGeometryChange(for: CGFloat.self) { proxy in
@@ -241,21 +275,68 @@ private struct BottomChrome: View {
     }
 }
 
-private struct ActiveOverlay: View {
-    let controller: AnnotateController
-    @State private var isGlowRevealed = false
+/// Value inputs preserve the frozen backdrop throughout its removal transition after stop clears capture state.
+private struct FrozenBackdrop: View {
+    let bounds: CGRect
+    let image: UIImage?
+    let isBrowsing: Bool
+
+    var body: some View {
+        ZStack {
+            if !isBrowsing {
+                if let image {
+                    Image(uiImage: image).resizable()
+                }
+                Color.black.opacity(AnnotateStyle.dimOpacity)
+            }
+        }
+        .frame(width: bounds.width, height: bounds.height)
+        .allowsHitTesting(false)
+    }
+}
+
+/// Keeps the glow and bottom wash on their own symmetric fade, below all annotation markers.
+private struct ActiveGlow: View {
+    let bounds: CGRect
+    let chromeTop: CGFloat?
+    let screenChromeBottom: CGFloat
 
     private enum UX {
-        static let glowEntranceDuration: Double = 0.9
         static let glowOpacity: Double = 0.75
     }
 
-    /// One reveal state keeps the bottom wash and edge rings in step across gesture-mode changes.
-    private var glowOpacity: Double { isGlowRevealed ? UX.glowOpacity : 0 }
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ScreenGlow(palette: .idle)
+                .frame(width: bounds.width, height: bounds.height)
+            bottomFrost
+        }
+        .opacity(UX.glowOpacity)
+        .allowsHitTesting(false)
+    }
 
-    /// Top edge of the bottom chrome in screen points (BottomChrome measures it); the gradient starts
-    /// here. Nil until the first layout pass.
-    let chromeTop: CGFloat?
+    /// Blue frost behind the bottom chrome (Figma 9272:16849 composing / 9272:17105 review): full
+    /// screen width, from the chrome stack's top (card, or hint line) down past the keyboard / home
+    /// indicator to the screen's bottom edge. Until the chrome is measured it starts where the review
+    /// bar's hint line sits, sharing the edge glow's fade instead of popping in a frame later.
+    private var bottomFrost: some View {
+        let top = chromeTop ?? estimatedChromeTop
+        return BottomFrost(palette: .idle)
+            .frame(width: bounds.width, height: max(bounds.maxY - top, 0))
+            .offset(y: top)
+            // Decoration only: drawing on the frozen screen behind it must keep working
+            .allowsHitTesting(false)
+    }
+
+    /// The review bar's hint line top: the chrome annotate mode opens with.
+    private var estimatedChromeTop: CGFloat {
+        screenChromeBottom - AnnotateController.barHeight - ToastView.hintGap - ToastView.hintHeight
+    }
+}
+
+/// Draws saved annotations and live selection above the independently fading backdrop and glow.
+private struct ActiveOverlay: View {
+    let controller: AnnotateController
 
     /// Not in Figma (design choice): pins' badges scale up from their own center on a spring.
     static let badgeAppearance: AnyTransition = .scale(scale: 0.3).combined(with: .opacity)
@@ -270,31 +351,6 @@ private struct ActiveOverlay: View {
         let sent = controller.sentPinsOnScreen
 
         ZStack(alignment: .topLeading) {
-            if !controller.isBrowsing, let frozen = controller.frozenImage {
-                Image(uiImage: frozen)
-                    .resizable()
-                    .frame(width: bounds.width, height: bounds.height)
-                    .allowsHitTesting(false)
-            }
-
-            if !controller.isBrowsing {
-                Color.black.opacity(AnnotateStyle.dimOpacity)
-                    .frame(width: bounds.width, height: bounds.height)
-                    .allowsHitTesting(false)
-            }
-
-            // Figma 9257:13546: the Overlay layer (dim + glow, 9257:13547) sits below every marker
-            // and badge, so pins near the edge stay pure white. Keep the same blue layers mounted
-            // in both gesture modes so browsing never removes or restarts their animation.
-            ScreenGlow(palette: .idle)
-                .frame(width: bounds.width, height: bounds.height)
-                .opacity(glowOpacity)
-                .allowsHitTesting(false)
-
-            // Figma layer order: Overlay (dim + glow), then the gradient, then pins and chrome
-            bottomFrost
-                .opacity(glowOpacity)
-
             if !controller.isBrowsing {
                 captureLayer
 
@@ -341,12 +397,6 @@ private struct ActiveOverlay: View {
         .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
         .animation(.snappy(duration: 0.2), value: controller.annotations)
         .animation(.snappy(duration: 0.2), value: sent.map(\.id))
-        .onAppear {
-            withAnimation(.easeInOut(duration: UX.glowEntranceDuration)) {
-                isGlowRevealed = true
-            }
-        }
-        .onDisappear { isGlowRevealed = false }
     }
 
     /// One pin's marker: the pin's id, its number, what it shows and where it attaches.
@@ -397,25 +447,6 @@ private struct ActiveOverlay: View {
                     .onChanged { controller.touchChanged(start: $0.startLocation, location: $0.location) }
                     .onEnded { controller.touchEnded(start: $0.startLocation, location: $0.location) }
             )
-    }
-
-    /// Blue frost behind the bottom chrome (Figma 9272:16849 composing / 9272:17105 review): full
-    /// screen width, from the chrome stack's top (card, or hint line) down past the keyboard / home
-    /// indicator to the screen's bottom edge. Until the chrome is measured it starts where the review
-    /// bar's hint line sits, sharing the edge glow's fade instead of popping in a frame later.
-    private var bottomFrost: some View {
-        let bounds = controller.bounds
-        let top = chromeTop ?? estimatedChromeTop
-        return BottomFrost(palette: .idle)
-            .frame(width: bounds.width, height: max(bounds.maxY - top, 0))
-            .offset(y: top)
-            // Decoration only: drawing on the frozen screen behind it must keep working
-            .allowsHitTesting(false)
-    }
-
-    /// The review bar's hint line top: the chrome annotate mode opens with.
-    private var estimatedChromeTop: CGFloat {
-        controller.screenChromeBottom - AnnotateController.barHeight - ToastView.hintGap - ToastView.hintHeight
     }
 }
 

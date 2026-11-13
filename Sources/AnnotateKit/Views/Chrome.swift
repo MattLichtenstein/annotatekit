@@ -715,7 +715,7 @@ struct LauncherButton: View {
     /// "Annotate", then the dot slides out leftward from behind the label and the pill widens to
     /// make room. Later appearances show it from the start.
     @MainActor private static var hasIntroducedIndicator = false
-    /// How long the pill shows just its title first: past its own fade-in (`OverlayRoot.modeDuration`)
+    /// How long the pill shows just its title first: past its own brief launcher fade-in
     /// with a beat to read it (design choice).
     static let indicatorDelay: Duration = .milliseconds(600)
     /// The slide and the widening, together (design choice; no Figma motion context).
