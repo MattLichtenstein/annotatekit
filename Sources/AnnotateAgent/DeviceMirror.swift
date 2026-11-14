@@ -8,7 +8,8 @@
 // and the session stays tracked until it is final with no question open, or `trackingLimit` passes.
 // Routing: a bundle belongs here when the `Annotate.install()` file it names sits in this checkout,
 // so builds from two worktrees reach the agent in each. The host app needs no setup for any of it:
-// no network permission and no Info.plist keys, just a development build on a paired device.
+// no network permission or Info.plist keys. Distribution discovery is project-scoped; actual
+// container access still depends on the signed installation and paired-device permissions.
 
 import AnnotateCore
 import Foundation
@@ -40,13 +41,22 @@ public struct RemoteFile: Sendable, Equatable {
 public protocol DeviceBridge: Sendable {
     /// Paired physical devices.
     func devices() async throws -> [RemoteDevice]
-    /// Apps installed from Xcode: their data containers are readable and writable.
+    /// Apps reported as developer builds by the paired device.
     func developerApps(on device: String) async throws -> [String]
+    /// Developer builds plus installed project apps, regardless of distribution signing.
+    func annotationApps(on device: String, including projectBundleIDs: [String]) async throws -> [String]
     /// Every file under `path` in the app's data container, recursively.
     func files(on device: String, app: String, path: String) async throws -> [RemoteFile]
     /// Copies a file or folder out of the container; `local` is the new item's path.
     func copy(from path: String, on device: String, app: String, to local: URL) async throws
     func copy(_ local: URL, to path: String, on device: String, app: String) async throws
+}
+
+extension DeviceBridge {
+    /// Existing bridges retain their discovery behavior until they support distribution candidates.
+    public func annotationApps(on device: String, including projectBundleIDs: [String]) async throws -> [String] {
+        try await developerApps(on: device)
+    }
 }
 
 public actor DeviceMirror {
@@ -189,7 +199,7 @@ public actor DeviceMirror {
                 live.formUnion(targets.keys.filter { $0.device == device.id })
                 continue
             }
-            guard let apps = try? await bridge.developerApps(on: device.id) else {
+            guard let apps = try? await bridge.annotationApps(on: device.id, including: projectBundleIDs) else {
                 // Paired but out of reach (asleep, off the network): keep what we knew, try later
                 backoffUntil[device.id] = now.addingTimeInterval(Self.backoff)
                 live.formUnion(targets.keys.filter { $0.device == device.id })

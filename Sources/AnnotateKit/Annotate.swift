@@ -1,5 +1,5 @@
 // Public entry point. Everything here exists in every configuration so call sites compile in
-// Release, but only DEBUG builds on UIKit platforms install the overlay; elsewhere these are no-ops.
+// Debug and Release; UIKit hosts must authorize installation and invocation. Other platforms are no-ops.
 // Public: Annotate.install(_:file:), start(), stop(), toggle(), isActive; AnnotateOptions; PromptDetail
 
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
@@ -20,8 +20,8 @@ public struct AnnotateOptions: Sendable {
     /// copies from over the developer connection (no network setup in the app).
     public var outputDirectory: URL?
     /// Turns on the in-process accessibility tree (the first time annotate mode starts, not at
-    /// launch) so un-annotated SwiftUI text, buttons and images are selectable. This is what
-    /// XCUITest does; switch it off if it interferes with your app.
+    /// launch) in Debug so un-annotated SwiftUI content is selectable. Release never invokes
+    /// the private accessibility hook; location pins and drawings remain available.
     public var enablesAccessibilityTree: Bool
     /// Launch-environment key that starts the app in annotate mode when set to "1", once the first
     /// screen has settled (past launch screens and splash animations). `<key>_DELAY=<seconds>`
@@ -70,7 +70,11 @@ public struct AnnotateOptions: Sendable {
     ) {
         self.showsLauncher = showsLauncher
         self.outputDirectory = outputDirectory
+        #if DEBUG
         self.enablesAccessibilityTree = enablesAccessibilityTree
+        #else
+        self.enablesAccessibilityTree = false
+        #endif
         self.launchEnvironmentKey = launchEnvironmentKey
         self.copiesPromptToClipboard = copiesPromptToClipboard
         self.completionNote = completionNote
@@ -87,17 +91,17 @@ public struct AnnotateOptions: Sendable {
 
 @MainActor
 public enum Annotate {
-    /// Call once at launch, e.g. in your `App.init()`. Safe to call in Release (does nothing).
+    /// Call once at launch, e.g. in your `App.init()`. Hosts must gate this call and invocation to their authorized users.
     /// - Parameter file: leave the default — the call site's path locates your project root.
     public static func install(_ options: AnnotateOptions = AnnotateOptions(), file: String = #filePath) {
-        #if DEBUG && canImport(UIKit)
+        #if canImport(UIKit)
         OverlayInstaller.shared.install(options: options, callerFile: file)
         #endif
     }
 
     /// Enters annotate mode.
     public static func start() {
-        #if DEBUG && canImport(UIKit)
+        #if canImport(UIKit)
         OverlayInstaller.shared.ensureAttached()
         OverlayInstaller.shared.controller.start()
         #endif
@@ -105,14 +109,14 @@ public enum Annotate {
 
     /// Leaves annotate mode, keeping unsent annotations.
     public static func stop() {
-        #if DEBUG && canImport(UIKit)
+        #if canImport(UIKit)
         OverlayInstaller.shared.controller.stop()
         #endif
     }
 
     /// Removes content acknowledged by T3 or, in a phone container, the opted-in Mac receiver.
     public static func clearDeliveredFeedback(in output: URL) async {
-        #if DEBUG && canImport(UIKit)
+        #if canImport(UIKit)
         _ = await Task.detached(priority: .utility) {
             T3DeliveryFiles.clearAcknowledgedContent(in: output)
             #if !targetEnvironment(simulator)
@@ -127,7 +131,7 @@ public enum Annotate {
     }
 
     public static var isActive: Bool {
-        #if DEBUG && canImport(UIKit)
+        #if canImport(UIKit)
         OverlayInstaller.shared.controller.isActive
         #else
         false

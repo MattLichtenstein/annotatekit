@@ -23,7 +23,7 @@
 // offset inside a full-screen top-leading ZStack. The freeze-frame captured on start sits at the
 // bottom of the stack: the app looks paused, and every coordinate refers to exactly that image.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

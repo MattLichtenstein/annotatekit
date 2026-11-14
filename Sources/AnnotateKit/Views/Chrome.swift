@@ -16,7 +16,7 @@
 // whether an agent is listening. The toast below predates the redesign and now only carries
 // in-mode messages.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

@@ -13,7 +13,7 @@
 // `chrome` whether the comment can be submitted (it needs text); Return types a
 // newline. A new drawing opens the card without the keyboard so the next stroke has the screen.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

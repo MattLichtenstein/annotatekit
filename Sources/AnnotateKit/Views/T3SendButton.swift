@@ -1,4 +1,4 @@
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore)
 import AnnotateCore
 #endif

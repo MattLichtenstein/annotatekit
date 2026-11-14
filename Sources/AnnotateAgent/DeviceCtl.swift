@@ -1,6 +1,7 @@
 // `DeviceBridge` over Xcode's `devicectl`: the same developer connection Xcode uses to install and
-// debug, over USB or Wi-Fi, so it reaches any development build on a paired device without the app
-// opening a socket or asking for Local Network access. Each call runs `xcrun devicectl` with JSON
+// debug, over USB or Wi-Fi. Discovery includes known project distribution apps, whose container
+// access must be verified on the signed installation. The app never
+// opens a socket or asks for Local Network access. Each call runs `xcrun devicectl` with JSON
 // output and a timeout; a device that's asleep or out of range just fails the call.
 
 #if os(macOS)
@@ -51,11 +52,22 @@ public struct DeviceCtlBridge: DeviceBridge {
     }
 
     public func developerApps(on device: String) async throws -> [String] {
+        try await annotationApps(on: device, including: [])
+    }
+
+    public func annotationApps(on device: String, including projectBundleIDs: [String]) async throws -> [String] {
         let result = try await run(["device", "info", "apps", "--device", device])
         let apps = result["apps"] as? [[String: Any]] ?? []
-        return apps.compactMap { app in
-            guard app["builtByDeveloper"] as? Bool == true else { return nil }
-            return app["bundleIdentifier"] as? String
+        return Self.annotationAppIDs(in: apps, including: projectBundleIDs)
+    }
+
+    /// Include only known project apps beyond developer builds; container access is tested separately.
+    static func annotationAppIDs(in apps: [[String: Any]], including projectBundleIDs: [String]) -> [String] {
+        apps.compactMap { app in
+            guard let id = app["bundleIdentifier"] as? String,
+                  app["builtByDeveloper"] as? Bool == true
+                    || BundleIDPattern.matches(id, anyOf: projectBundleIDs) else { return nil }
+            return id
         }
     }
 

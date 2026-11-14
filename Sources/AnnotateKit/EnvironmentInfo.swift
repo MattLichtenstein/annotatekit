@@ -2,7 +2,7 @@
 // from), which device, and the appearance settings that change layout (screen size, color scheme,
 // Dynamic Type).
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

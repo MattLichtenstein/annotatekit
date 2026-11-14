@@ -5,7 +5,7 @@
 // plays, so the app does no per-frame work. The look and motion are the old views' own: the same
 // stops, periods, phases and sizes. Reduce Motion adds no animations and holds the time-zero pose.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 import UIKit
 
 /// One stop of a fluid gradient: the palette color at `opacity`, at `location` (0...1).

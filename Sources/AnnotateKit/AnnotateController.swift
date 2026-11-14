@@ -48,7 +48,7 @@
 // Idle cost is near zero: the accessibility tree and `.annotatable()` frame tracking switch on
 // only while annotating, and the text outline is scanned once the tree is warm.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif
@@ -411,7 +411,7 @@ final class AnnotateController {
         launchStart = nil
         // Nothing moves the pill while annotating, so the chrome walk rests until `stop`
         stopPlacementChecks()
-        // Paid only once someone actually annotates, not on every DEBUG launch
+        // Paid only once someone actually annotates, not on every app launch
         if options.enablesAccessibilityTree {
             AccessibilityBootstrap.enable()
         }
@@ -1689,7 +1689,7 @@ final class AnnotateController {
                 guard let self, self.isActive else { return }
                 let scan = ElementScanner.outlineScan(excluding: self.window)
                 // Without the bootstrap there's no tree to wait for: the first walk is the outline
-                let isSteady = !self.options.enablesAccessibilityTree
+                let isSteady = !self.options.enablesAccessibilityTree || !AccessibilityBootstrap.isSupported
                     || (scan.accessibilityNodes > 0 && scan.accessibilityNodes == previousNodes)
                 if isSteady || Date().timeIntervalSince(started) > Self.warmUpTimeout {
                     // A count that never settles (UIKit-only screens) still leaves the last walk as

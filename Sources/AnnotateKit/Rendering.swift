@@ -9,7 +9,7 @@
 // overlay's white-on-dim look from the Figma redesign, and the blue/red the bundle PNGs keep.
 // Stroke geometry and width are shared, so what the user drew is exactly what the agent sees.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

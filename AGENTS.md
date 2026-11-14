@@ -5,7 +5,7 @@ follow [`skills/annotate-setup/SKILL.md`](skills/annotate-setup/SKILL.md) instea
 
 ## What this is
 
-AnnotateKit is visual annotation for iOS apps. A DEBUG-only overlay lets a developer pin comments
+AnnotateKit is visual annotation for iOS apps. An opt-in UIKit overlay in Debug and Release lets an authorized user pin comments
 and drawings onto a frozen screen of their running app. Send writes a session bundle, and the
 `annotate` CLI delivers it to a coding agent (Claude Code channels, MCP tools, a watcher, or
 headless `claude -p`).
@@ -16,7 +16,7 @@ headless `claude -p`).
 swift test                      # AnnotateCore + AnnotateAgent (macOS or Linux), must pass
 swift run annotate help         # CLI
 xcodebuild build -scheme AnnotateKit -destination 'generic/platform=iOS Simulator'                        # overlay, Debug
-xcodebuild build -scheme AnnotateKit -configuration Release -destination 'generic/platform=iOS Simulator'  # Release stubs
+xcodebuild build -scheme AnnotateKit -configuration Release -destination 'generic/platform=iOS Simulator'  # Release overlay, private accessibility excluded
 claude plugin validate --strict .   # after touching .claude-plugin/ or skills/
 ```
 
@@ -42,10 +42,11 @@ No Mac: `docker run --rm -v "$PWD":/pkg -w /pkg swift:6.2-noble swift test`.
 
 - **Coordinate contract.** Points, origin top-left, relative to the frozen screen. `screens/N.png`
   is 1x, so pixel = point. Pins carry `anchor` + `frame`.
-- **Release safety.** Everything in AnnotateKit except `Annotate.swift` and the public part of
-  `Annotatable.swift` sits inside `#if DEBUG && canImport(UIKit)`. Public API must compile, as
-  no-ops, without DEBUG. The private accessibility symbol is resolved with `dlsym` and must never
-  be linked.
+- **Release safety.** The UIKit overlay is opt-in in Debug and Release. Hosts must authorize
+  installation and invocation. Private accessibility bootstrapping, including its library path,
+  symbol string, and dynamic lookup, is compiled only in Debug. Release preserves drawing and
+  location pins with public element scanning; automatic SwiftUI element detection may be reduced.
+  Public APIs remain no-ops on platforms without UIKit.
 - **Portable core.** AnnotateCore and AnnotateAgent import only Foundation and stay Linux-buildable.
   `Process` lives behind `#if os(macOS) || os(Linux)`.
 - **Schema.** Changes to `session.json` types need a CHANGELOG note. Breaking ones bump

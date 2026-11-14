@@ -4,7 +4,7 @@
 // attachments into `attachments/`, renders the prompt at the job's `PromptDetail`, writes the bundle and prunes old sessions —
 // all on a background task, so the overlay dismisses instantly.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

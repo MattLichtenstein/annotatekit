@@ -7,7 +7,7 @@
 // launch-time start then waits for the app's first settled screen.
 // With the launcher hidden, no window exists until annotate mode first starts.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

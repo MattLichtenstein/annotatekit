@@ -6,7 +6,7 @@
 // the keyboard and adds the 8pt inset. ↑ sends through the controller, which decides via `chrome`
 // whether the reply can be submitted; Return types a newline.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

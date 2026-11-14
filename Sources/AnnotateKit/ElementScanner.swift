@@ -10,7 +10,7 @@
 // also counts accessibility nodes, which tells the controller when SwiftUI's tree is built.
 // All frames are screen points.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif

@@ -39,6 +39,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+- Opt-in UIKit overlays in Debug and Release, with private accessibility bootstrapping compiled
+  only in Debug. Release preserves drawing and location pins with public element scanning.
+  Hosts must authorize installation and invocation.
+- Mac receiver discovery includes known installed project apps regardless of distribution
+  flags, without assuming container access or scanning unrelated distribution apps.
+
 ### Added
 - Opt-in T3 routing: long-press Send chooses New thread or five recent project threads,
   process-local destination reuse, durable offline batches, and a separate Mac receiver.

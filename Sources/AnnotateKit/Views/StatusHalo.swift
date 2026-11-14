@@ -5,7 +5,7 @@
 // public API, so the wave crossfades from a sharp circle to the same circle blurred once with Core
 // Image while it swells; the solid dot drawn over its center hides the crossfade's midpoint.
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 import CoreImage
 import SwiftUI
 import UIKit

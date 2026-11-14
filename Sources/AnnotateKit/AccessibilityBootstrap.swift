@@ -1,17 +1,28 @@
-// Turns on the in-process accessibility tree, the same switch XCUITest and KIF flip.
-// SwiftUI builds `accessibilityElements` for Text/Button/Image only when an accessibility client is
-// active; without this, taps on un-annotated SwiftUI content only find the hosting view.
-// Resolved with dlsym at runtime and compiled only in DEBUG, so no private symbol is linked.
+// Enables the private in-process accessibility bootstrap only in Debug. Release uses public
+// element scanning, explicit registrations, drawings, and location pins without loading private APIs.
 
-#if DEBUG && canImport(UIKit)
-import Darwin
+#if canImport(UIKit)
 import Foundation
+#if DEBUG
+import Darwin
+#endif
 
 @MainActor
 enum AccessibilityBootstrap {
+    static var isSupported: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    #if DEBUG
     private static var didEnable = false
+    #endif
 
     static func enable() {
+        #if DEBUG
         guard !didEnable else { return }
         didEnable = true
 
@@ -27,6 +38,7 @@ enum AccessibilityBootstrap {
             unsafeBitCast(symbol, to: SetEnabled.self)(1)
             return
         }
+        #endif
     }
 }
 #endif

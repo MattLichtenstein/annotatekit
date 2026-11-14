@@ -1,13 +1,13 @@
 // `.annotatable()` — optional exact source mapping. While annotate mode is on, each tagged view
 // reports its screen frame and its `#filePath`/`#line` to an in-process registry; a pin on (or
 // inside) that view then carries the file and line. While it's off, tagged views do no geometry
-// work at all (one observed Bool), and outside DEBUG the modifier returns `self`.
+// work at all (one observed Bool). UIKit hosts can opt into source mapping in any configuration.
 // Public: View.annotatable(_:file:line:)
 
 #if canImport(SwiftUI)
 import SwiftUI
 #endif
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 #if canImport(AnnotateCore) // the CocoaPods build compiles AnnotateCore into this module
 import AnnotateCore
 #endif
@@ -20,7 +20,7 @@ extension View {
     /// Tags this view for annotation source mapping.
     /// - Parameter name: shown on pins and in the prompt; defaults to the file name.
     public func annotatable(_ name: String? = nil, file: String = #filePath, line: Int = #line) -> some View {
-        #if DEBUG && canImport(UIKit)
+        #if canImport(UIKit)
         modifier(AnnotatableModifier(name: name, file: file, line: line))
         #else
         self
@@ -29,7 +29,7 @@ extension View {
 }
 #endif
 
-#if DEBUG && canImport(UIKit)
+#if canImport(UIKit)
 /// Live `.annotatable()` registrations. Only `isCollecting` is observed (it switches frame
 /// tracking on in every tagged view); the registrations themselves are read on tap.
 @MainActor

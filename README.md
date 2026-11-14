@@ -12,9 +12,15 @@
 prompts for your coding agent. Tap, draw, and send to Claude, Codex, Cursor, or any MCP client.
 
 Works with SwiftUI, UIKit, [React Native and Expo](#react-native-and-expo), on device and in the
-simulator. Everything is behind `#if DEBUG`, so Release builds carry none of it.
+simulator. This maintained fork supports opt-in UIKit overlays in Debug and Release. Hosts must
+authorize installation and invocation; Release excludes private accessibility bootstrapping,
+so automatic SwiftUI element detection may be reduced while drawings and location pins remain.
 
 ## Install
+
+Known project bundle IDs are discovery candidates even for distribution installs. The receiver
+still needs paired-device container access; TestFlight and App Store transport support must be
+verified on those signed installations. Unrelated distribution apps are not inspected.
 
 ### Optional T3 routing (maintained fork)
 
@@ -171,7 +177,7 @@ import AnnotateKit
 
 @main
 struct MyApp: App {
-    init() { Annotate.install() }   // no-op in Release
+    init() { Annotate.install() }   // Call only for authorized users.
     var body: some Scene { WindowGroup { ContentView() } }
 }
 ```
@@ -346,8 +352,8 @@ screen.
 - **Delivery.** The app writes a session bundle to `.annotate/` in your project. On a physical
   device, the running `annotate` process copies it over `devicectl`, with no network permission or
   Info.plist keys. The bundle format is in [SCHEMA.md](SCHEMA.md).
-- **Cost.** Nothing in Release and no dependencies. In DEBUG, near-zero until you enter annotate
-  mode.
+- **Cost.** The overlay is compiled in Debug and Release but stays inactive until the host
+  installs and invokes it. Heavy capture, geometry tracking, and scanning start only on invocation.
 
 ## Limitations
 
